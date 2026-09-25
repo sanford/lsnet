@@ -26,6 +26,7 @@ fn identify(d: &Device) -> Option<Id> {
         .or_else(|| from_ports(d))
         .or_else(|| from_brand_names(d))
         .or_else(|| from_vendor(d))
+        .or_else(|| from_generic_ports(d))
 }
 
 fn from_mdns(d: &Device) -> Option<Id> {
@@ -339,11 +340,19 @@ fn from_ports(d: &Device) -> Option<Id> {
     if has(7000) {
         return Some(("AirPlay device", None));
     }
+    None
+}
+
+/// SSH and SMB run on everything from laptops to switches and NASes, so they
+/// are the weakest hint of all: consulted only after the MAC vendor, and
+/// labeled for what's known rather than guessing a kind of device.
+fn from_generic_ports(d: &Device) -> Option<Id> {
+    let has = |p: u16| d.open_ports.contains(&p);
     if has(445) {
         return Some(("Computer / NAS", None));
     }
     if has(22) {
-        return Some(("Computer", None));
+        return Some(("SSH device", None));
     }
     None
 }
@@ -563,6 +572,22 @@ mod tests {
         assert_eq!(kasa_model("kl420").as_deref(), Some("KL420"));
         assert_eq!(kasa_model("hsbc"), None);
         assert_eq!(kasa_model("epson"), None);
+    }
+
+    fn device(ports: &[u16], vendor: Option<&'static str>) -> Device {
+        let mut d = Device::new(std::net::Ipv4Addr::new(192, 168, 1, 2));
+        d.open_ports = ports.to_vec();
+        d.vendor = vendor;
+        d
+    }
+
+    #[test]
+    fn vendor_beats_generic_ports() {
+        // A Ubiquiti switch with SSH open is network gear, not a computer.
+        assert_eq!(identify(&device(&[22], Some("Ubiquiti"))).map(|id| id.0), Some("Network gear"));
+        assert_eq!(identify(&device(&[22], None)).map(|id| id.0), Some("SSH device"));
+        // Specific ports still beat the vendor: an Apple MAC with only the sync port is a phone.
+        assert_eq!(identify(&device(&[62078], Some("Apple"))).map(|id| id.0), Some("Phone / tablet"));
     }
 
     #[test]
