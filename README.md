@@ -36,7 +36,15 @@ It's meant to answer the question "what is that?" faster and more simply than [n
 
 ## Install
 
-You'll need a [Rust toolchain](https://rustup.rs). lsnet runs on macOS and Linux (x86_64 and 64-bit ARM, including 64-bit Raspberry Pi OS).
+lsnet runs on macOS and Linux (x86_64 and 64-bit ARM, including 64-bit Raspberry Pi OS).
+
+With [Homebrew](https://brew.sh):
+
+```sh
+brew install sanford/tap/lsnet
+```
+
+With Cargo, if you have a [Rust toolchain](https://rustup.rs):
 
 ```sh
 cargo install --git https://github.com/sanford/lsnet
