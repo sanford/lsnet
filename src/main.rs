@@ -17,7 +17,7 @@ use pnet::util::MacAddr;
 use serde::Serialize;
 use ssdp::SsdpInfo;
 use std::collections::{BTreeMap, HashMap};
-use std::io::ErrorKind;
+use std::io::{ErrorKind, IsTerminal};
 use std::net::{IpAddr, Ipv4Addr};
 use std::process::ExitCode;
 use std::sync::mpsc;
@@ -30,8 +30,13 @@ use tokio::task::JoinSet;
 #[command(version)]
 struct Args {
     /// Network interface to scan (default: the one your internet traffic uses)
-    #[arg(short = 'I', long)]
+    #[arg(short, long, short_alias = 'I')]
     interface: Option<String>,
+
+    /// Print a table instead of opening the device browser (the default
+    /// when output isn't a terminal)
+    #[arg(short, long)]
+    list: bool,
 
     /// Print results as JSON
     #[arg(long)]
@@ -48,10 +53,6 @@ struct Args {
     /// Skip hostname lookups
     #[arg(long)]
     no_dns: bool,
-
-    /// Browse results interactively, with full details for each device
-    #[arg(short, long, conflicts_with = "json")]
-    interactive: bool,
 }
 
 #[derive(Serialize)]
@@ -109,10 +110,13 @@ fn main() -> ExitCode {
 }
 
 fn run(args: &Args) -> Result<(), String> {
-    if args.interactive {
-        return tui::run(|| scan(args));
-    }
-    let scan = scan(args)?;
+    // Browse in a terminal; print for pipes, files and anything asking for text.
+    let interactive = !(args.list || args.json || args.verbose)
+        && std::io::stdin().is_terminal()
+        && std::io::stdout().is_terminal()
+        && std::env::var("TERM").is_ok_and(|t| t != "dumb");
+    // After browsing, the table is still printed so the results stay in the scrollback.
+    let scan = if interactive { tui::run(|| scan(args))? } else { scan(args)? };
     if args.json {
         println!("{}", serde_json::to_string_pretty(&scan.devices).unwrap());
         return Ok(());

@@ -4,23 +4,26 @@
 
 ```
 $ lsnet
- IP             NAME                TYPE                    MODEL
- 192.168.1.1    Home Router         Router (gateway)        Netgear RAX50
- 192.168.1.8    Brother HL-L2350DW  Printer                 Brother HL-L2350DW series
- 192.168.1.14   diskstation         NAS                     Synology DS920+
- 192.168.1.52   Living Room         TV / streamer           Apple TV 4K (3rd gen)
- 192.168.1.60   Kitchen             Speaker                 HomePod mini
- 192.168.1.71   Office speaker      Speaker                 Google Nest Mini
- 192.168.1.88   kp115               Smart plug              TP-Link Kasa KP115
- 192.168.1.90   blink-mini          Camera                  Blink Mini
- 192.168.1.112  alex-phone          Phone / tablet          iPhone / iPad
- 192.168.1.130  raspberrypi.local   Computer                Raspberry Pi
- 192.168.1.150  pihole              DNS server              Pi-hole
- 192.168.1.196  Alex's MacBook Pro  Computer (this device)  MacBook Pro (M4)
- 192.168.1.201  ..................  Computer                .........................
- 192.168.1.203  ..................  ......................  .........................
-
-14 devices on 192.168.1.0/24 (en0) in 2.0s
+ lsnet  14 devices on 192.168.1.0/24 (en0) in 2.0s
+┌ Devices (14) ─────────────────────────────────────────────┐┌ Living Room ────────────────────────────────┐
+│  IP              NAME               TYPE                  ││ TV / streamer · Apple TV 4K (3rd gen)       │
+│  192.168.1.1     Home Router        Router (gateway)      ││                                             │
+│  192.168.1.8     Brother HL-L2350DW Printer               ││ IP            192.168.1.52                  │
+│  192.168.1.14    diskstation        NAS                   ││ Hostname      living-room                   │
+│› 192.168.1.52    Living Room        TV / streamer         ││ Open ports    7000 AirPlay · 62078 iOS sync │
+│  192.168.1.60    Kitchen            Speaker               ││                                             │
+│  192.168.1.71    Office speaker     Speaker               ││ Bonjour (mDNS)                              │
+│  192.168.1.88    kp115              Smart plug            ││ Name          Living-Room.local             │
+│  192.168.1.90    blink-mini         Camera                ││ airplay        Living Room                  │
+│  192.168.1.112   alex-phone         Phone / tablet        ││                 model = AppleTV14,1         │
+│  192.168.1.130   raspberrypi.local  Computer              ││ raop           6C4A85D1E0F2@Living Room     │
+│  192.168.1.150   pihole             DNS server            ││                 am = AppleTV14,1            │
+│  192.168.1.196   Alex's MacBook Pro Computer (this device)││ companion-link Living Room                  │
+│  192.168.1.201   ·                  Computer              ││                 rpmd = AppleTV14,1          │
+│  192.168.1.203   ·                                        ││                                             │
+│                                                           ││                                             │
+└───────────────────────────────────────────────────────────┘└─────────────────────────────────────────────┘
+ ↑↓ move  ⏎ copy IP  / filter  r rescan  ? help  q quit
 ```
 
 It's meant to answer the question "what is that?" faster and more simply than [nmap](https://nmap.org). It isn't a port scanner or a security tool.
@@ -32,7 +35,7 @@ It's meant to answer the question "what is that?" faster and more simply than [n
 - **Identifies devices, not just addresses.** It combines what devices announce about themselves (Bonjour, UPnP), their naming conventions, web UI banners, open ports and MAC vendors into a type and a model.
 - **Works without root.** On Linux you even get MAC addresses and vendors without it.
 - **macOS and Linux.**
-- **Interactive.** `lsnet -i` lets you scroll through the devices and see everything known about each one.
+- **Browse or print.** In a terminal, `lsnet` opens a browser with everything known about each device. When piped, or with `-l`, it prints a table.
 - **Scriptable.** `--json` outputs every piece of evidence behind each identification.
 
 ## Install
@@ -67,52 +70,28 @@ While hacking on it, `./run.sh [ARGS]` builds, installs to `~/.local/bin`, and r
 ```
 lsnet [OPTIONS]
 
-  -I, --interface <NAME>  Network interface to scan (default: the one your internet traffic uses)
-  -v, --verbose           Also show hostnames, open ports and advertised services
+  -i, --interface <NAME>  Network interface to scan (default: the one your internet traffic uses)
+  -l, --list              Print a table instead of opening the device browser
+  -v, --verbose           Print a table that also shows hostnames, open ports and advertised services
       --json              Print results as JSON
   -t, --timeout <MS>      How long to wait for devices to answer [default: 1200]
       --no-dns            Skip reverse DNS lookups
-  -i, --interactive       Browse results, with every detail for the selected device
 ```
 
 Some examples:
 
 ```sh
-lsnet                  # scan the local network
+lsnet                  # browse the devices on your network
+lsnet -l               # just print the list
 sudo lsnet             # also show MAC addresses and vendors
 lsnet -v               # show the evidence: hostnames, ports, services
 lsnet -t 3000          # wait longer for sleepy Wi-Fi devices
-lsnet -i               # scroll through devices; enter or y copies the IP
 lsnet --json | jq '.[] | select(.type == "Printer")'
 ```
 
-### Interactive mode
+### The device browser
 
-`lsnet -i` opens a full-screen browser. Devices are listed on the left, and everything `lsnet` learned about the selected one is on the right: open ports, Bonjour services with their TXT records, UPnP details and the web page banner.
-
-```
-$ lsnet -i
- lsnet  14 devices on 192.168.1.0/24 (en0) in 2.0s
-┌ Devices (14) ─────────────────────────────────────────────┐┌ Living Room ────────────────────────────────┐
-│  IP              NAME               TYPE                  ││ TV / streamer · Apple TV 4K (3rd gen)       │
-│  192.168.1.1     Home Router        Router (gateway)      ││                                             │
-│  192.168.1.8     Brother HL-L2350DW Printer               ││ IP            192.168.1.52                  │
-│  192.168.1.14    diskstation        NAS                   ││ Hostname      living-room                   │
-│› 192.168.1.52    Living Room        TV / streamer         ││ Open ports    7000 AirPlay · 62078 iOS sync │
-│  192.168.1.60    Kitchen            Speaker               ││                                             │
-│  192.168.1.71    Office speaker     Speaker               ││ Bonjour (mDNS)                              │
-│  192.168.1.88    kp115              Smart plug            ││ Name          Living-Room.local             │
-│  192.168.1.90    blink-mini         Camera                ││ airplay        Living Room                  │
-│  192.168.1.112   alex-phone         Phone / tablet        ││                 model = AppleTV14,1         │
-│  192.168.1.130   raspberrypi.local  Computer              ││ raop           6C4A85D1E0F2@Living Room     │
-│  192.168.1.150   pihole             DNS server            ││                 am = AppleTV14,1            │
-│  192.168.1.196   Alex's MacBook Pro Computer (this device)││ companion-link Living Room                  │
-│  192.168.1.201   ·                  Computer              ││                 rpmd = AppleTV14,1          │
-│  192.168.1.203   ·                                        ││                                             │
-│                                                           ││                                             │
-└───────────────────────────────────────────────────────────┘└─────────────────────────────────────────────┘
- ↑↓ move  ⏎/y copy IP  PgUp/PgDn scroll details  / filter  r rescan  q quit
-```
+Run in a terminal, `lsnet` opens the browser shown at the top. Devices are listed on the left, and everything `lsnet` learned about the selected one is on the right: open ports, Bonjour services with their TXT records, UPnP details and the web page banner. Press `?` to see every key:
 
 | Key | Action |
 |---|---|
@@ -124,9 +103,35 @@ $ lsnet -i
 | `/` | Filter by IP, name, type, model, vendor, MAC or hostname. `Enter` keeps the filter, `Esc` clears it |
 | `r` | Scan again, keeping your place |
 | `Esc` | Clear the filter, or quit if there isn't one |
+| `h` or `?` | Show all the keys |
 | `q` or `Ctrl-c` | Quit |
 
 In narrow terminals the details appear below the list instead of beside it. Copying uses `pbcopy` on macOS and `wl-copy`, `xclip` or `xsel` on Linux. Without any of those, `lsnet` asks the terminal to do the copy, which also works over SSH in most modern terminals.
+
+### Text output
+
+When you quit the browser, `lsnet` prints the results as a table, so they stay in your terminal after it closes. To skip the browser and print the table straight away, use `-l`. `lsnet` also skips the browser when its output is piped or redirected, and with `-v` or `--json`.
+
+```
+$ lsnet -l
+ IP             NAME                TYPE                    MODEL
+ 192.168.1.1    Home Router         Router (gateway)        Netgear RAX50
+ 192.168.1.8    Brother HL-L2350DW  Printer                 Brother HL-L2350DW series
+ 192.168.1.14   diskstation         NAS                     Synology DS920+
+ 192.168.1.52   Living Room         TV / streamer           Apple TV 4K (3rd gen)
+ 192.168.1.60   Kitchen             Speaker                 HomePod mini
+ 192.168.1.71   Office speaker      Speaker                 Google Nest Mini
+ 192.168.1.88   kp115               Smart plug              TP-Link Kasa KP115
+ 192.168.1.90   blink-mini          Camera                  Blink Mini
+ 192.168.1.112  alex-phone          Phone / tablet          iPhone / iPad
+ 192.168.1.130  raspberrypi.local   Computer                Raspberry Pi
+ 192.168.1.150  pihole              DNS server              Pi-hole
+ 192.168.1.196  Alex's MacBook Pro  Computer (this device)  MacBook Pro (M4)
+ 192.168.1.201  ..................  Computer                .........................
+ 192.168.1.203  ..................  ......................  .........................
+
+14 devices on 192.168.1.0/24 (en0) in 2.0s
+```
 
 ### Device names
 
