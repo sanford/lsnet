@@ -198,7 +198,10 @@ impl App {
         f.render_widget(Paragraph::new(head), header);
 
         let [list, detail] = if body.width >= SIDE_BY_SIDE {
-            Layout::horizontal([Constraint::Percentage(55), Constraint::Percentage(45)]).areas(body)
+            // As wide as the list needs, up to 60%; details get the rest.
+            let (name, kind) = self.column_widths();
+            let list = 2 + 2 + 15 + 1 + name + 1 + kind;
+            Layout::horizontal([Constraint::Length(list.min(body.width * 6 / 10)), Constraint::Fill(1)]).areas(body)
         } else {
             Layout::vertical([Constraint::Percentage(50), Constraint::Percentage(50)]).areas(body)
         };
@@ -207,15 +210,23 @@ impl App {
         self.draw_footer(f, footer);
     }
 
+    /// Widths of the NAME and TYPE columns, measured over every device so
+    /// that filtering doesn't shift the layout.
+    fn column_widths(&self) -> (u16, u16) {
+        let widest = |header: &str, width: &dyn Fn(&Device) -> usize| {
+            self.scan.devices.iter().map(width).max().unwrap_or(0).max(header.len()) as u16
+        };
+        (
+            widest("NAME", &|d| list_name(d).width()),
+            widest("TYPE", &|d| kind_label(d).map_or(0, |k| k.chars().count())),
+        )
+    }
+
     fn draw_list(&mut self, f: &mut Frame, area: Rect) {
+        // TYPE gets the room it needs; NAME takes whatever is left.
+        let (_, type_width) = self.column_widths();
         let rows = self.visible.iter().map(|&i| {
             let d = &self.scan.devices[i];
-            let name = match (&d.name, &d.hostname, d.vendor) {
-                (Some(n), _, _) => Span::raw(n.clone()).bold(),
-                (None, Some(h), _) => Span::raw(h.clone()),
-                (None, None, Some(v)) => Span::raw(v).dim(),
-                (None, None, None) => Span::raw("·").dark_gray(),
-            };
             let kind_style = match (d.this_device, d.gateway) {
                 (true, _) => Style::new().cyan(),
                 (_, true) => Style::new().yellow(),
@@ -223,7 +234,7 @@ impl App {
             };
             Row::new([
                 Cell::from(d.ip.to_string()).green(),
-                Cell::from(name),
+                Cell::from(list_name(d)),
                 Cell::from(kind_label(d).unwrap_or_default()).style(kind_style),
             ])
         });
@@ -232,7 +243,7 @@ impl App {
         } else {
             format!(" Devices ({} of {}) ", self.visible.len(), self.scan.devices.len())
         };
-        let table = Table::new(rows, [Constraint::Length(15), Constraint::Fill(3), Constraint::Fill(2)])
+        let table = Table::new(rows, [Constraint::Length(15), Constraint::Fill(1), Constraint::Length(type_width)])
             .header(Row::new(["IP", "NAME", "TYPE"]).bold())
             .block(Block::bordered().title(title))
             .row_highlight_style(Style::new().add_modifier(Modifier::REVERSED))
@@ -292,6 +303,16 @@ impl App {
     }
 }
 
+/// A device's name for the list, falling back to its hostname, then its vendor.
+fn list_name(d: &Device) -> Span<'static> {
+    match (&d.name, &d.hostname, d.vendor) {
+        (Some(n), _, _) => Span::raw(n.clone()).bold(),
+        (None, Some(h), _) => Span::raw(h.clone()),
+        (None, None, Some(v)) => Span::raw(v).dim(),
+        (None, None, None) => Span::raw("·").dark_gray(),
+    }
+}
+
 fn draw_scanning(terminal: &mut DefaultTerminal) {
     let _ = terminal.draw(|f| f.render_widget(Paragraph::new(" Scanning the network…".dim()), f.area()));
 }
@@ -346,14 +367,16 @@ fn details(d: &Device) -> Vec<Line<'static>> {
         // Services that identify the device first; generic infrastructure dimmed at the end.
         let (noisy, useful): (Vec<_>, Vec<_>) =
             m.services.iter().partition(|(s, _)| NOISY_SERVICES.contains(&s.as_str()));
+        // Line instance names up past the longest service type.
+        let width = m.services.keys().map(String::len).max().unwrap_or(0).max(LABEL);
         for (dim, (svc, instance)) in useful.into_iter().map(|s| (false, s)).chain(noisy.into_iter().map(|s| (true, s))) {
             let style = if dim { Style::new().dark_gray() } else { Style::new() };
             out.push(Line::from(vec![
-                Span::styled(format!("{svc:<LABEL$} "), style.fg(if dim { Color::DarkGray } else { Color::Blue })),
+                Span::styled(format!("{svc:<width$} "), style.fg(if dim { Color::DarkGray } else { Color::Blue })),
                 Span::styled(instance.clone(), style),
             ]));
             for (k, v) in m.txt.get(svc).into_iter().flatten() {
-                out.push(Line::styled(format!("{:LABEL$}  {k} = {v}", ""), Style::new().dark_gray()));
+                out.push(Line::styled(format!("{:width$}  {k} = {v}", ""), Style::new().dark_gray()));
             }
         }
     }
