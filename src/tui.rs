@@ -291,9 +291,9 @@ impl App {
             return;
         };
         let title = d.name.clone().unwrap_or_else(|| d.ip.to_string());
-        let para = Paragraph::new(details(d)).wrap(Wrap { trim: false });
         let block = Block::bordered().title(format!(" {title} ").bold()).padding(Padding::horizontal(1));
         let inner = block.inner(area);
+        let para = Paragraph::new(details(d, inner.width)).wrap(Wrap { trim: false });
         self.detail_lines = para.line_count(inner.width) as u16;
         self.detail_height = inner.height;
         self.scroll_detail(0);
@@ -385,8 +385,26 @@ fn haystack(d: &Device) -> String {
     fields.into_iter().flatten().collect::<Vec<_>>().join("\n").to_lowercase()
 }
 
-fn details(d: &Device) -> Vec<Line<'static>> {
+/// The details pane's lines for `d`, wrapped to `cols` with long values
+/// continuing under the value column rather than the label.
+fn details(d: &Device, cols: u16) -> Vec<Line<'static>> {
     let mut out = Vec::new();
+    // One value column for the whole pane, wide enough for the longest Bonjour service type.
+    let services = d.mdns.iter().flat_map(|m| m.services.keys());
+    let width = services.map(String::len).max().unwrap_or(0).max(LABEL);
+    let room = (cols as usize).saturating_sub(width + 1);
+    let row = |out: &mut Vec<Line<'static>>, label: Span<'static>, value: &str, style: Style| {
+        for (i, part) in wrap(value, room).into_iter().enumerate() {
+            let label = if i == 0 { label.clone() } else { Span::raw("") };
+            let pad = " ".repeat(width + 1 - label.width().min(width));
+            out.push(Line::from(vec![label, Span::raw(pad), Span::styled(part, style)]));
+        }
+    };
+    let field = |out: &mut Vec<Line<'static>>, label: &'static str, value: Option<String>| {
+        if let Some(v) = value.filter(|v| !v.is_empty()) {
+            row(out, label.dim(), &v, Style::new());
+        }
+    };
     let heading = [kind_label(d), d.model.clone()].into_iter().flatten().collect::<Vec<_>>().join(" · ");
     if !heading.is_empty() {
         out.push(Line::from(heading).italic());
@@ -421,16 +439,12 @@ fn details(d: &Device) -> Vec<Line<'static>> {
         // Services that identify the device first; generic infrastructure dimmed at the end.
         let (noisy, useful): (Vec<_>, Vec<_>) =
             m.services.iter().partition(|(s, _)| NOISY_SERVICES.contains(&s.as_str()));
-        // Line instance names up past the longest service type.
-        let width = m.services.keys().map(String::len).max().unwrap_or(0).max(LABEL);
         for (dim, (svc, instance)) in useful.into_iter().map(|s| (false, s)).chain(noisy.into_iter().map(|s| (true, s))) {
             let style = if dim { Style::new().dark_gray() } else { Style::new() };
-            out.push(Line::from(vec![
-                Span::styled(format!("{svc:<width$} "), style.fg(if dim { Color::DarkGray } else { Color::Blue })),
-                Span::styled(instance.clone(), style),
-            ]));
+            let label = Span::styled(svc.clone(), style.fg(if dim { Color::DarkGray } else { Color::Blue }));
+            row(&mut out, label, instance, style);
             for (k, v) in m.txt.get(svc).into_iter().flatten() {
-                out.push(Line::styled(format!("{:width$}  {k} = {v}", ""), Style::new().dark_gray()));
+                row(&mut out, Span::raw(""), &format!("{k} = {v}"), Style::new().dark_gray());
             }
         }
     }
@@ -439,8 +453,12 @@ fn details(d: &Device) -> Vec<Line<'static>> {
         section(&mut out, "UPnP");
         field(&mut out, "Name", s.friendly_name.clone());
         field(&mut out, "Manufacturer", s.manufacturer.clone());
-        let model = [s.model_name.clone(), s.model_number.clone()].into_iter().flatten().collect::<Vec<_>>();
-        field(&mut out, "Model", (!model.is_empty()).then(|| model.join(" ")));
+        let model = match (&s.model_name, &s.model_number) {
+            (Some(name), Some(number)) if !name.contains(number.as_str()) => Some(format!("{name} {number}")),
+            (Some(name), _) => Some(name.clone()),
+            (None, number) => number.clone(),
+        };
+        field(&mut out, "Model", model);
         field(&mut out, "Device type", s.device_type.clone());
         field(&mut out, "Server", s.server.clone());
     }
@@ -458,10 +476,37 @@ fn section(out: &mut Vec<Line<'static>>, title: &'static str) {
     out.push(Line::from(title).bold().cyan());
 }
 
-fn field(out: &mut Vec<Line<'static>>, label: &str, value: Option<String>) {
-    if let Some(v) = value.filter(|v| !v.is_empty()) {
-        out.push(Line::from(vec![format!("{label:<LABEL$} ").dim(), Span::raw(v)]));
+/// Break `text` into lines of at most `max` characters, at spaces where it can.
+fn wrap(text: &str, max: usize) -> Vec<String> {
+    let max = max.max(1);
+    let mut lines = Vec::new();
+    let mut line = String::new();
+    for mut word in text.split(' ') {
+        loop {
+            let used = line.chars().count();
+            if used + usize::from(used > 0) + word.chars().count() <= max {
+                if used > 0 {
+                    line.push(' ');
+                }
+                line.push_str(word);
+                break;
+            }
+            if used > 0 {
+                lines.push(std::mem::take(&mut line));
+                continue;
+            }
+            // A word longer than a whole line gets split, after punctuation
+            // if there's some (hostnames, URNs, paths), or else anywhere.
+            let fits = word.char_indices().nth(max).map_or(word.len(), |(i, _)| i);
+            let at = word[..fits].rfind(['.', ':', '/', '-', '_', '@']).map_or(fits, |i| i + 1);
+            lines.push(word[..at].to_string());
+            word = &word[at..];
+        }
     }
+    if !line.is_empty() || lines.is_empty() {
+        lines.push(line);
+    }
+    lines
 }
 
 /// What the ports `probe` checks usually mean.
@@ -524,6 +569,19 @@ fn base64(data: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wrap_breaks_at_spaces_then_mid_word() {
+        assert_eq!(wrap("7000 AirPlay · 62078 iOS sync", 20), ["7000 AirPlay · 62078", "iOS sync"]);
+        assert_eq!(wrap("fhrouter.mynetworksettings.com", 29), ["fhrouter.mynetworksettings.", "com"]);
+        assert_eq!(wrap("urn:schemas-upnp-org:device:InternetGatewayDevice:2", 30), [
+            "urn:schemas-upnp-org:device:",
+            "InternetGatewayDevice:2"
+        ]);
+        assert_eq!(wrap("abcdefghij", 4), ["abcd", "efgh", "ij"]);
+        assert_eq!(wrap("short", 20), ["short"]);
+        assert_eq!(wrap("", 20), [""]);
+    }
 
     #[test]
     fn base64_pads() {
