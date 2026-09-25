@@ -27,12 +27,13 @@ It's meant to answer the question "what is that?" faster and more simply than [n
 - **Zero config.** It detects your interface, subnet and gateway on its own.
 - **Fast.** Every discovery method runs concurrently, and a /24 takes about 2 seconds.
 - **Identifies devices, not just addresses.** It combines what devices announce about themselves (Bonjour, UPnP), their naming conventions, web UI banners, open ports and MAC vendors into a type and a model.
-- **Works without root.** `sudo` adds MAC addresses and vendors, but isn't required.
+- **Works without root.** On Linux you even get MAC addresses and vendors without it.
+- **macOS and Linux.**
 - **Scriptable.** `--json` outputs every piece of evidence behind each identification.
 
 ## Install
 
-You'll need a [Rust toolchain](https://rustup.rs).
+You'll need a [Rust toolchain](https://rustup.rs). lsnet runs on macOS and Linux (x86_64 and 64-bit ARM, including 64-bit Raspberry Pi OS).
 
 ```sh
 cargo install --git https://github.com/sanford/lsnet
@@ -75,7 +76,8 @@ lsnet --json | jq '.[] | select(.type == "Printer")'
 
 | Source | What it finds | Needs root |
 |---|---|---|
-| **ARP sweep** | Every device that has an IP address, including ones with no open ports, plus its MAC address | yes |
+| **ARP sweep** | Every device that has an IP address, including ones with no open ports, plus its MAC address | yes (or `CAP_NET_RAW` on Linux) |
+| **ARP cache** | MAC addresses the kernel learned during the scan | no (Linux only) |
 | **TCP probe** | Live hosts, since even a refused connection proves a device is there, and which common ports are open | no |
 | **mDNS / Bonjour** | Friendly names ("Living Room") and model identifiers from TXT records (`AppleTV14,1`, Chromecast `md=`, printer `ty=`, HomeKit categories) | no |
 | **SSDP / UPnP** | Manufacturer, model and name from each device's UPnP description, which is how routers, TVs and NASes usually identify themselves | no |
@@ -86,9 +88,20 @@ Then it classifies each device using the most specific evidence available: what 
 
 ### Running without sudo
 
-Without root, `lsnet` can't send raw ARP packets, so it finds devices with the TCP probe and the discovery protocols instead. That covers most devices. It will miss devices that have every port filtered and announce nothing.
+Without root, `lsnet` can't send its own ARP packets. It finds devices with the TCP probe and the discovery protocols instead, and how much else you get depends on the OS:
 
-**On recent macOS**, binaries that aren't Apple-signed are also blocked from reading the system ARP table and MAC addresses. So without `sudo` the VENDOR and MAC columns are hidden entirely, and lsnet identifies devices from what they announce.
+- **Linux:** almost nothing is lost. The TCP probe makes the kernel look up the MAC of every live address, and `lsnet` reads the results from `/proc/net/arp`. That gives MACs and vendors, and even finds devices with no open ports.
+- **macOS:** recent versions don't let binaries that aren't Apple-signed read the ARP table or MAC addresses. Without `sudo`, the VENDOR and MAC columns are hidden, devices are identified from what they announce, and devices that are both silent and fully firewalled are missed.
+
+On Linux, you can give the binary raw-socket access once instead of using `sudo` every time:
+
+```sh
+sudo setcap cap_net_raw+ep "$(which lsnet)"
+```
+
+### Firewalls
+
+mDNS and SSDP replies come back to `lsnet` as unicast packets from each device. A host firewall that blocks unsolicited incoming UDP can silently drop them, for example `ufw` or `firewalld` with default settings on some Linux distributions. The scan still works, but names and models will be missing. If `lsnet -v` shows no SERVICES for devices you know advertise them, check the firewall.
 
 ## Output fields
 
@@ -107,9 +120,10 @@ In `--json`, each device includes:
 
 ## Limitations
 
-- **macOS only, for now.** Interface and gateway detection use macOS tools. Linux support is planned.
+- **macOS and Linux only.** Windows isn't supported. The raw-packet library needs Npcap there.
 - **IPv4 only.** Networks larger than /22 are narrowed to your local /24 to keep scans fast.
 - **Identification is heuristic.** Devices that announce nothing and have no open ports show up as `?`. Running with `sudo` at least adds their vendor.
+- **The Linux ARP cache can be stale.** Entries for devices that just left the network can linger for a few seconds after they disconnect.
 - **Sleepy devices can be missed.** Phones and IoT devices in Wi-Fi power-save mode may not answer within the default window. Use `-t` to wait longer.
 
 ## Updating the vendor database

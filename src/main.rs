@@ -4,6 +4,7 @@ mod http;
 mod iface;
 mod mdns;
 mod oui;
+mod platform;
 mod probe;
 mod ssdp;
 
@@ -215,7 +216,10 @@ fn run(args: &Args) -> Result<(), String> {
     if let Some(full) = ifc.narrowed_from {
         eprintln!("{}", dim(format!("{full} is large; scanned only the local /24")));
     }
-    if !privileged {
+    // Where the OS shares its ARP cache (Linux), unprivileged scans already
+    // see MACs and quiet devices, so the tip only matters when it doesn't.
+    let have_macs = devices.iter().any(|d| d.mac.is_some() && !d.this_device);
+    if !privileged && !have_macs {
         eprintln!(
             "{}",
             dim("tip: run with sudo to see MAC addresses and vendors, and find devices with no open ports".into())

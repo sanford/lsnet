@@ -1,10 +1,10 @@
 //! Figure out which interface and subnet to scan, and where the gateway is.
 
+use crate::platform;
 use pnet::datalink::{self, NetworkInterface};
 use pnet::ipnetwork::{IpNetwork, Ipv4Network};
 use pnet::util::MacAddr;
 use std::net::{IpAddr, Ipv4Addr, UdpSocket};
-use std::process::Command;
 
 /// Largest subnet we sweep in full. Anything bigger gets narrowed to the
 /// local /24 so a default run stays fast.
@@ -77,7 +77,7 @@ pub fn detect(name: Option<&str>) -> Result<Iface, String> {
     };
 
     Ok(Iface {
-        gateway: default_gateway(&iface.name),
+        gateway: platform::default_gateway(&iface.name),
         ip: v4.ip(),
         mac,
         net,
@@ -114,14 +114,4 @@ fn pick(all: Vec<NetworkInterface>, preferred: Option<Ipv4Addr>) -> Option<Netwo
         }
     // Outbound traffic goes through a VPN or similar; fall back to the first real LAN interface.
     all.into_iter().find(|i| usable(i))
-}
-
-/// Default IPv4 gateway for this interface, from the routing table.
-fn default_gateway(iface: &str) -> Option<Ipv4Addr> {
-    let out = Command::new("netstat").args(["-rn", "-f", "inet"]).output().ok()?;
-    String::from_utf8_lossy(&out.stdout)
-        .lines()
-        .filter(|l| l.starts_with("default"))
-        .find(|l| l.split_whitespace().any(|w| w == iface))
-        .and_then(|l| l.split_whitespace().nth(1)?.parse().ok())
 }

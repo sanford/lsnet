@@ -1,11 +1,12 @@
 //! Host discovery over ARP.
 //!
-//! With raw-socket access (root, or BPF permissions) we broadcast ARP requests
+//! With raw-socket access (root; CAP_NET_RAW on Linux; BPF access on macOS) we broadcast ARP requests
 //! ourselves and listen for replies: fast, finds devices that ignore every
 //! port, and gives us MAC addresses. Without it we can only read the
 //! kernel's ARP cache.
 
 use crate::iface::Iface;
+use crate::platform;
 use pnet::datalink::{self, Channel, Config};
 use pnet::packet::arp::{ArpHardwareTypes, ArpOperations, ArpPacket, MutableArpPacket};
 use pnet::packet::ethernet::{EtherTypes, EthernetPacket, MutableEthernetPacket};
@@ -14,7 +15,6 @@ use pnet::util::MacAddr;
 use std::collections::HashMap;
 use std::io;
 use std::net::Ipv4Addr;
-use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -108,44 +108,13 @@ fn arp_request(src_mac: MacAddr, src_ip: Ipv4Addr, target: Ipv4Addr) -> [u8; 42]
     buf
 }
 
-/// Whatever the kernel's ARP cache knows, from `arp -an`, e.g.
-/// `? (192.168.1.1) at a4:2b:b0:1:2:3 on en0 ifscope [ethernet]`.
-/// Recent macOS returns nothing here unless the binary is Apple-signed.
+/// Whatever the kernel's ARP cache knows about this network. Linux shares
+/// it freely; recent macOS returns nothing unless the binary is Apple-signed.
 pub fn read_cache(ifc: &Iface) -> Found {
-    let Ok(out) = Command::new("arp").arg("-an").output() else {
-        return Found::new();
-    };
-    String::from_utf8_lossy(&out.stdout)
-        .lines()
-        .filter_map(|line| {
-            let words: Vec<&str> = line.split_whitespace().collect();
-            let ip: Ipv4Addr = words.get(1)?.trim_matches(|c| c == '(' || c == ')').parse().ok()?;
-            let mac = parse_mac(words.get(3)?)?;
-            let on_iface = words.windows(2).any(|w| w[0] == "on" && w[1] == ifc.iface.name);
-            (on_iface && ifc.net.contains(ip) && ip != ifc.ip && ip != ifc.net.broadcast())
-                .then_some((ip, mac))
+    platform::arp_cache(&ifc.iface.name)
+        .into_iter()
+        .filter(|(ip, mac)| {
+            ifc.net.contains(*ip) && *ip != ifc.ip && *ip != ifc.net.broadcast() && *mac != MacAddr::broadcast()
         })
-        .filter(|(_, mac)| *mac != MacAddr::broadcast())
         .collect()
-}
-
-/// macOS drops leading zeros (`a4:2b:0:1:2:3`), so parse each octet individually.
-fn parse_mac(s: &str) -> Option<MacAddr> {
-    let o: Vec<u8> = s
-        .split(':')
-        .map(|p| u8::from_str_radix(p, 16))
-        .collect::<Result<_, _>>()
-        .ok()?;
-    (o.len() == 6).then(|| MacAddr::new(o[0], o[1], o[2], o[3], o[4], o[5]))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn parses_short_macs() {
-        assert_eq!(parse_mac("a4:2b:0:1:2:ff"), Some(MacAddr::new(0xa4, 0x2b, 0, 1, 2, 0xff)));
-        assert_eq!(parse_mac("(incomplete)"), None);
-    }
 }

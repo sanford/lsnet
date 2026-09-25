@@ -287,8 +287,10 @@ fn from_ports(d: &Device) -> Option<Id> {
 }
 
 fn from_vendor(d: &Device) -> Option<Id> {
-    if d.vendor.is_none() && d.randomized_mac {
-        // Phones, tablets and laptops use per-network random MACs; appliances don't.
+    // Phones, tablets and laptops use per-network random MACs and rarely
+    // listen on any ports. VMs and containers also use random-looking MACs,
+    // but usually run services, so only guess when nothing is listening.
+    if d.vendor.is_none() && d.randomized_mac && d.open_ports.is_empty() && !d.gateway && !d.this_device {
         return Some(("Phone / laptop", None));
     }
     let v = d.vendor?;
