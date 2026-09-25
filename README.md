@@ -12,12 +12,13 @@ $ lsnet
  192.168.1.60   Kitchen              Speaker                 HomePod mini
  192.168.1.71   Office speaker       Speaker                 Google Nest Mini
  192.168.1.88   kp115                Smart plug              TP-Link Kasa KP115
- 192.168.1.90   Hallway              Camera                  Blink Mini
+ 192.168.1.90   blink-mini           Camera                  Blink Mini
  192.168.1.112  alex-phone           Phone / tablet          iPhone / iPad
+ 192.168.1.130  raspberrypi.local    Computer                Raspberry Pi
  192.168.1.150  pihole               DNS server              Pi-hole
  192.168.1.196  Alex's MacBook Pro   Computer (this device)  MacBook Pro (M4)
 
-11 devices on 192.168.1.0/24 (en0) in 2.0s
+12 devices on 192.168.1.0/24 (en0) in 2.0s
 ```
 
 It's meant to answer the question "what is that?" faster and more simply than [nmap](https://nmap.org). It isn't a port scanner or a security tool.
