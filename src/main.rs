@@ -116,7 +116,16 @@ fn run(args: &Args) -> Result<(), String> {
         && std::io::stdout().is_terminal()
         && std::env::var("TERM").is_ok_and(|t| t != "dumb");
     // After browsing, the table is still printed so the results stay in the scrollback.
-    let scan = if interactive { tui::run(|| scan(args))? } else { scan(args)? };
+    let scan = if interactive {
+        tui::run(|| scan(args))?
+    } else if std::io::stderr().is_terminal() {
+        let dim = |s: String| s.if_supports_color(Stderr, |t| t.dimmed().to_string()).to_string();
+        let result = animate(|| scan(args), |ping| eprint!("\r{}", dim(format!("{ping}  Scanning the network…"))));
+        eprint!("\r\x1b[2K");
+        result?
+    } else {
+        scan(args)?
+    };
     if args.json {
         println!("{}", serde_json::to_string_pretty(&scan.devices).unwrap());
         return Ok(());
@@ -129,6 +138,25 @@ fn run(args: &Args) -> Result<(), String> {
         eprintln!("{}", dim(note));
     }
     Ok(())
+}
+
+/// A sonar ping: ripples leave the dot and fade out.
+const PING: &[&str] = &["●      ", "● )    ", "● ) )  ", "● ) ) )", "●   ) )", "●     )", "●      "];
+
+/// Run `work` on another thread, calling `frame` with each frame of the
+/// ping animation until it's done.
+fn animate<T: Send>(work: impl FnOnce() -> T + Send, mut frame: impl FnMut(&str)) -> T {
+    let (tx, rx) = mpsc::channel();
+    thread::scope(|s| {
+        s.spawn(move || tx.send(work()));
+        for ping in PING.iter().cycle() {
+            frame(ping);
+            if let Ok(done) = rx.recv_timeout(Duration::from_millis(120)) {
+                return done;
+            }
+        }
+        unreachable!("the animation cycles forever")
+    })
 }
 
 /// The results of one pass over the network.

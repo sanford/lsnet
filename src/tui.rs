@@ -1,7 +1,7 @@
 //! Interactive browser: a scrolling device list beside the full details of
 //! whichever device is selected.
 
-use crate::{Device, NOISY_SERVICES, Scan, kind_label};
+use crate::{Device, NOISY_SERVICES, Scan, animate, kind_label};
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
@@ -36,7 +36,7 @@ const KEYS: &[(&str, &str)] = &[
 ];
 
 /// Browse until the user quits, returning the latest scan.
-pub fn run(scan: impl Fn() -> Result<Scan, String>) -> Result<Scan, String> {
+pub fn run(scan: impl Fn() -> Result<Scan, String> + Sync) -> Result<Scan, String> {
     let mut terminal = ratatui::init();
     let result = App::start(&mut terminal, &scan)
         .and_then(|mut app| app.run(&mut terminal, &scan).map(|()| app.scan));
@@ -60,10 +60,10 @@ struct App {
 }
 
 impl App {
-    fn start(terminal: &mut DefaultTerminal, scan: &impl Fn() -> Result<Scan, String>) -> Result<App, String> {
-        draw_scanning(terminal);
+    fn start(terminal: &mut DefaultTerminal, scan: &(impl Fn() -> Result<Scan, String> + Sync)) -> Result<App, String> {
+        let scan = animate(scan, |ping| draw_scanning(terminal, ping))?;
         let mut app = App {
-            scan: scan()?,
+            scan,
             visible: Vec::new(),
             table: TableState::default(),
             filter: String::new(),
@@ -78,7 +78,7 @@ impl App {
         Ok(app)
     }
 
-    fn run(&mut self, terminal: &mut DefaultTerminal, scan: &impl Fn() -> Result<Scan, String>) -> Result<(), String> {
+    fn run(&mut self, terminal: &mut DefaultTerminal, scan: &(impl Fn() -> Result<Scan, String> + Sync)) -> Result<(), String> {
         loop {
             if self.flash.as_ref().is_some_and(|(_, at)| at.elapsed() > FLASH) {
                 self.flash = None;
@@ -133,9 +133,11 @@ impl App {
                 KeyCode::Char('/') => self.typing_filter = true,
                 KeyCode::Char('h' | '?') => self.show_help = true,
                 KeyCode::Char('r') => {
-                    self.flash = Some(("Scanning…".into(), Instant::now()));
-                    terminal.draw(|f| self.draw(f)).map_err(|e| e.to_string())?;
-                    match scan() {
+                    let result = animate(scan, |ping| {
+                        self.flash = Some((format!("{ping}  Scanning…"), Instant::now()));
+                        let _ = terminal.draw(|f| self.draw(f));
+                    });
+                    match result {
                         Ok(s) => {
                             let keep = self.selected_ip();
                             self.scan = s;
@@ -367,8 +369,19 @@ fn list_name(d: &Device) -> Span<'static> {
     }
 }
 
-fn draw_scanning(terminal: &mut DefaultTerminal) {
-    let _ = terminal.draw(|f| f.render_widget(Paragraph::new(" Scanning the network…".dim()), f.area()));
+fn draw_scanning(terminal: &mut DefaultTerminal, ping: &str) {
+    let _ = terminal.draw(|f| {
+        let text = format!("{ping}  Scanning the network…");
+        let width = text.chars().count() as u16;
+        let area = f.area();
+        let at = Rect {
+            x: area.x + area.width.saturating_sub(width) / 2,
+            y: area.y + area.height / 2,
+            width: width.min(area.width),
+            height: 1.min(area.height),
+        };
+        f.render_widget(Paragraph::new(text).dim(), at);
+    });
 }
 
 /// Everything the filter matches against, lowercased.
