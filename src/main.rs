@@ -7,6 +7,7 @@ mod oui;
 mod platform;
 mod probe;
 mod ssdp;
+mod tui;
 
 use clap::Parser;
 use comfy_table::{Attribute, Cell, Color, ContentArrangement, Table, presets};
@@ -29,7 +30,7 @@ use tokio::task::JoinSet;
 #[command(version)]
 struct Args {
     /// Network interface to scan (default: the one your internet traffic uses)
-    #[arg(short, long)]
+    #[arg(short = 'I', long)]
     interface: Option<String>,
 
     /// Print results as JSON
@@ -47,6 +48,10 @@ struct Args {
     /// Skip hostname lookups
     #[arg(long)]
     no_dns: bool,
+
+    /// Browse results interactively, with full details for each device
+    #[arg(short, long, conflicts_with = "json")]
+    interactive: bool,
 }
 
 #[derive(Serialize)]
@@ -104,6 +109,34 @@ fn main() -> ExitCode {
 }
 
 fn run(args: &Args) -> Result<(), String> {
+    if args.interactive {
+        return tui::run(|| scan(args));
+    }
+    let scan = scan(args)?;
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&scan.devices).unwrap());
+        return Ok(());
+    }
+
+    print_table(&scan.devices, args.verbose);
+    let dim = |s: &str| s.if_supports_color(Stderr, |t| t.dimmed().to_string()).to_string();
+    eprintln!("\n{}", dim(&scan.summary));
+    for note in &scan.notes {
+        eprintln!("{}", dim(note));
+    }
+    Ok(())
+}
+
+/// The results of one pass over the network.
+pub struct Scan {
+    devices: Vec<Device>,
+    /// e.g. "27 devices on 192.168.1.0/24 (en0) in 2.1s"
+    summary: String,
+    /// Caveats about what the scan couldn't see.
+    notes: Vec<String>,
+}
+
+fn scan(args: &Args) -> Result<Scan, String> {
     let start = Instant::now();
     let ifc = iface::detect(args.interface.as_deref())?;
     let targets = ifc.targets();
@@ -196,36 +229,24 @@ fn run(args: &Args) -> Result<(), String> {
         classify::classify(d);
     }
 
-    if args.json {
-        println!("{}", serde_json::to_string_pretty(&devices).unwrap());
-        return Ok(());
-    }
-
-    print_table(&devices, args.verbose);
-    let dim = |s: String| s.if_supports_color(Stderr, |t| t.dimmed().to_string()).to_string();
-    eprintln!(
-        "\n{}",
-        dim(format!(
-            "{} devices on {} ({}) in {:.1}s",
-            devices.len(),
-            ifc.net,
-            ifc.iface.name,
-            start.elapsed().as_secs_f64()
-        ))
+    let summary = format!(
+        "{} devices on {} ({}) in {:.1}s",
+        devices.len(),
+        ifc.net,
+        ifc.iface.name,
+        start.elapsed().as_secs_f64()
     );
+    let mut notes = Vec::new();
     if let Some(full) = ifc.narrowed_from {
-        eprintln!("{}", dim(format!("{full} is large; scanned only the local /24")));
+        notes.push(format!("{full} is large; scanned only the local /24"));
     }
     // Where the OS shares its ARP cache (Linux), unprivileged scans already
     // see MACs and quiet devices, so the tip only matters when it doesn't.
     let have_macs = devices.iter().any(|d| d.mac.is_some() && !d.this_device);
     if !privileged && !have_macs {
-        eprintln!(
-            "{}",
-            dim("tip: run with sudo to see MAC addresses and vendors, and find devices with no open ports".into())
-        );
+        notes.push("tip: run with sudo to see MAC addresses and vendors, and find devices with no open ports".into());
     }
-    Ok(())
+    Ok(Scan { devices, summary, notes })
 }
 
 /// Reverse lookups (which on macOS also ask mDNS for `.local` names), in
@@ -339,13 +360,22 @@ fn print_table(devices: &[Device], verbose: bool) {
     println!("{table}");
 }
 
+/// The TYPE column, marking this machine and the gateway.
+fn kind_label(d: &Device) -> Option<String> {
+    match (d.kind.as_deref(), d.this_device, d.gateway) {
+        (k, true, _) => Some(format!("{} (this device)", k.unwrap_or("Computer"))),
+        (Some("Router") | None, _, true) => Some("Router (gateway)".into()),
+        (Some(k), _, true) => Some(format!("{k} (gateway)")),
+        (k, _, _) => k.map(String::from),
+    }
+}
+
 fn row(d: &Device, show_mac: bool, verbose: bool) -> Vec<Field> {
-    let kind = match (d.kind.as_deref(), d.this_device, d.gateway) {
-        (k, true, _) => Field::new(Some(&format!("{} (this device)", k.unwrap_or("Computer")))).fg(Color::Cyan),
-        (Some("Router") | None, _, true) => Field::new(Some("Router (gateway)")).fg(Color::Yellow),
-        (Some(k), _, true) => Field::new(Some(&format!("{k} (gateway)"))).fg(Color::Yellow),
-        (Some(k), _, _) => Field::new(Some(k)),
-        (None, _, _) => Field::new(None),
+    let kind = Field::new(kind_label(d).as_deref());
+    let kind = match (d.this_device, d.gateway) {
+        (true, _) => kind.fg(Color::Cyan),
+        (_, true) => kind.fg(Color::Yellow),
+        _ => kind,
     };
     let mut row = vec![
         Field::new(Some(&d.ip.to_string())).fg(Color::Green),
