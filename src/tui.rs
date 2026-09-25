@@ -7,7 +7,7 @@ use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
-    Block, Cell, Padding, Paragraph, Row, Scrollbar, ScrollbarOrientation, ScrollbarState, Table, TableState, Wrap,
+    Block, Cell, Clear, Padding, Paragraph, Row, Scrollbar, ScrollbarOrientation, ScrollbarState, Table, TableState, Wrap,
 };
 use ratatui::{DefaultTerminal, Frame};
 use std::io::Write;
@@ -20,9 +20,26 @@ const SIDE_BY_SIDE: u16 = 100;
 const LABEL: usize = 13;
 const FLASH: Duration = Duration::from_secs(2);
 
-pub fn run(scan: impl Fn() -> Result<Scan, String>) -> Result<(), String> {
+/// Every key, for the help screen.
+const KEYS: &[(&str, &str)] = &[
+    ("↑ ↓  j k", "Move through the list"),
+    ("g G  Home End", "First or last device"),
+    ("Enter  y", "Copy the IP address"),
+    ("PgUp PgDn", "Scroll details half a page"),
+    ("Ctrl-u Ctrl-d", "Scroll details half a page"),
+    ("J K", "Scroll details one line"),
+    ("/", "Filter the list"),
+    ("Esc", "Clear the filter, or quit"),
+    ("r", "Scan again"),
+    ("h  ?", "Show this help"),
+    ("q  Ctrl-c", "Quit"),
+];
+
+/// Browse until the user quits, returning the latest scan.
+pub fn run(scan: impl Fn() -> Result<Scan, String>) -> Result<Scan, String> {
     let mut terminal = ratatui::init();
-    let result = App::start(&mut terminal, &scan).and_then(|mut app| app.run(&mut terminal, &scan));
+    let result = App::start(&mut terminal, &scan)
+        .and_then(|mut app| app.run(&mut terminal, &scan).map(|()| app.scan));
     ratatui::restore();
     result
 }
@@ -39,6 +56,7 @@ struct App {
     detail_height: u16,
     detail_lines: u16,
     flash: Option<(String, Instant)>,
+    show_help: bool,
 }
 
 impl App {
@@ -54,6 +72,7 @@ impl App {
             detail_height: 0,
             detail_lines: 0,
             flash: None,
+            show_help: false,
         };
         app.refilter(None);
         Ok(app)
@@ -73,6 +92,16 @@ impl App {
                 continue;
             };
             if key.kind != KeyEventKind::Press {
+                continue;
+            }
+            if self.show_help {
+                // Any key closes the help, except that the quit keys still quit.
+                self.show_help = false;
+                if key.code == KeyCode::Char('q')
+                    || (key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL))
+                {
+                    return Ok(());
+                }
                 continue;
             }
             if self.typing_filter {
@@ -102,6 +131,7 @@ impl App {
                 KeyCode::Char('K') => self.scroll_detail(-1),
                 KeyCode::Enter | KeyCode::Char('y') => self.copy_ip(),
                 KeyCode::Char('/') => self.typing_filter = true,
+                KeyCode::Char('h' | '?') => self.show_help = true,
                 KeyCode::Char('r') => {
                     self.flash = Some(("Scanning…".into(), Instant::now()));
                     terminal.draw(|f| self.draw(f)).map_err(|e| e.to_string())?;
@@ -208,6 +238,9 @@ impl App {
         self.draw_list(f, list);
         self.draw_detail(f, detail);
         self.draw_footer(f, footer);
+        if self.show_help {
+            draw_help(f, body);
+        }
     }
 
     /// Widths of the NAME and TYPE columns, measured over every device so
@@ -283,14 +316,14 @@ impl App {
         } else {
             let mut keys = vec![
                 ("↑↓", "move"),
-                ("⏎/y", "copy IP"),
-                ("PgUp/PgDn", "scroll details"),
+                ("⏎", "copy IP"),
                 ("/", "filter"),
                 ("r", "rescan"),
+                ("?", "help"),
                 ("q", "quit"),
             ];
             if !self.filter.is_empty() {
-                keys.insert(4, ("esc", "clear filter"));
+                keys.insert(3, ("esc", "clear filter"));
             }
             let mut spans = vec![Span::raw(" ")];
             for (k, what) in keys {
@@ -301,6 +334,27 @@ impl App {
         };
         f.render_widget(Paragraph::new(line), area);
     }
+}
+
+fn draw_help(f: &mut Frame, area: Rect) {
+    let key_width = KEYS.iter().map(|(k, _)| k.chars().count()).max().unwrap_or(0);
+    let mut lines: Vec<Line> = KEYS
+        .iter()
+        .map(|(k, what)| Line::from(vec![format!("{k:<key_width$}   ").bold(), Span::raw(*what)]))
+        .collect();
+    lines.push(Line::default());
+    lines.push(Line::from("Press any key to close").dim());
+    let width = lines.iter().map(Line::width).max().unwrap_or(0) as u16 + 4;
+    let height = lines.len() as u16 + 2;
+    let popup = Rect {
+        x: area.x + area.width.saturating_sub(width) / 2,
+        y: area.y + area.height.saturating_sub(height) / 2,
+        width: width.min(area.width),
+        height: height.min(area.height),
+    };
+    f.render_widget(Clear, popup);
+    let block = Block::bordered().title(" Keys ".bold()).padding(Padding::horizontal(1));
+    f.render_widget(Paragraph::new(lines).block(block), popup);
 }
 
 /// A device's name for the list, falling back to its hostname, then its vendor.
