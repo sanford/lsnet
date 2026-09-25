@@ -23,7 +23,7 @@ $ lsnet
 │  192.168.1.203   ·                                        ││                                               │
 │                                                           ││                                               │
 └───────────────────────────────────────────────────────────┘└───────────────────────────────────────────────┘
- ↑↓ move  ⏎ copy IP  / filter  r rescan  ? help  q quit
+ ↑↓ move  ⏎ copy IP  c copy details  / filter  r rescan  ? help  q quit
 ```
 
 It's meant to answer the question "what is that?" faster and more simply than [nmap](https://nmap.org). It isn't a port scanner or a security tool.
@@ -98,6 +98,7 @@ Run in a terminal, `lsnet` opens the browser shown at the top. Devices are liste
 | `↑` `↓` or `j` `k` | Move through the list |
 | `g` `G` or `Home` `End` | Jump to the first or last device |
 | `Enter` or `y` | Copy the selected IP address to the clipboard |
+| `c` | Copy all the details to the clipboard as plain text |
 | `PgUp` `PgDn` or `Ctrl-u` `Ctrl-d` | Scroll the details by half a page |
 | `J` `K` | Scroll the details by one line |
 | `/` | Filter by IP, name, type, model, vendor, MAC or hostname. `Enter` keeps the filter, `Esc` clears it |
@@ -106,7 +107,7 @@ Run in a terminal, `lsnet` opens the browser shown at the top. Devices are liste
 | `h` or `?` | Show all the keys |
 | `q` or `Ctrl-c` | Quit |
 
-In narrow terminals the details appear below the list instead of beside it. Copying uses `pbcopy` on macOS and `wl-copy`, `xclip` or `xsel` on Linux. Without any of those, `lsnet` asks the terminal to do the copy, which also works over SSH in most modern terminals.
+Selecting text with the mouse picks up both panes, so use `c` to copy the details instead. It copies every line, including any scrolled out of view, without wrapping. In narrow terminals the details appear below the list instead of beside it. Copying uses `pbcopy` on macOS and `wl-copy`, `xclip` or `xsel` on Linux. Without any of those, `lsnet` asks the terminal to do the copy, which also works over SSH in most modern terminals.
 
 ### Text output
 

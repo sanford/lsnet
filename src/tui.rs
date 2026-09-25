@@ -25,6 +25,7 @@ const KEYS: &[(&str, &str)] = &[
     ("↑ ↓  j k", "Move through the list"),
     ("g G  Home End", "First or last device"),
     ("Enter  y", "Copy the IP address"),
+    ("c", "Copy all the details"),
     ("PgUp PgDn", "Scroll details half a page"),
     ("Ctrl-u Ctrl-d", "Scroll details half a page"),
     ("J K", "Scroll details one line"),
@@ -130,6 +131,7 @@ impl App {
                 KeyCode::Char('J') => self.scroll_detail(1),
                 KeyCode::Char('K') => self.scroll_detail(-1),
                 KeyCode::Enter | KeyCode::Char('y') => self.copy_ip(),
+                KeyCode::Char('c') if !ctrl => self.copy_details(),
                 KeyCode::Char('/') => self.typing_filter = true,
                 KeyCode::Char('h' | '?') => self.show_help = true,
                 KeyCode::Char('r') => {
@@ -214,6 +216,13 @@ impl App {
         let Some(ip) = self.selected_ip() else { return };
         copy_to_clipboard(&ip.to_string());
         self.flash = Some((format!("Copied {ip} to the clipboard"), Instant::now()));
+    }
+
+    fn copy_details(&mut self) {
+        let Some(d) = self.selected() else { return };
+        let title = d.name.clone().unwrap_or_else(|| d.ip.to_string());
+        copy_to_clipboard(&details_text(d));
+        self.flash = Some((format!("Copied the details for {title} to the clipboard"), Instant::now()));
     }
 
     fn draw(&mut self, f: &mut Frame) {
@@ -319,13 +328,14 @@ impl App {
             let mut keys = vec![
                 ("↑↓", "move"),
                 ("⏎", "copy IP"),
+                ("c", "copy details"),
                 ("/", "filter"),
                 ("r", "rescan"),
                 ("?", "help"),
                 ("q", "quit"),
             ];
             if !self.filter.is_empty() {
-                keys.insert(3, ("esc", "clear filter"));
+                keys.insert(4, ("esc", "clear filter"));
             }
             let mut spans = vec![Span::raw(" ")];
             for (k, what) in keys {
@@ -489,6 +499,19 @@ fn section(out: &mut Vec<Line<'static>>, title: &'static str) {
     out.push(Line::from(title).bold().cyan());
 }
 
+/// The details pane as plain text for the clipboard: a title, then every
+/// line unwrapped, with styling and trailing spaces dropped.
+fn details_text(d: &Device) -> String {
+    let title = d.name.clone().unwrap_or_else(|| d.ip.to_string());
+    let lines = details(d, u16::MAX).into_iter().map(|line| {
+        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        text.trim_end().to_string()
+    });
+    let mut out = std::iter::once(title).chain(lines).collect::<Vec<_>>().join("\n");
+    out.push('\n');
+    out
+}
+
 /// Break `text` into lines of at most `max` characters, at spaces where it can.
 fn wrap(text: &str, max: usize) -> Vec<String> {
     let max = max.max(1);
@@ -594,6 +617,22 @@ mod tests {
         assert_eq!(wrap("abcdefghij", 4), ["abcd", "efgh", "ij"]);
         assert_eq!(wrap("short", 20), ["short"]);
         assert_eq!(wrap("", 20), [""]);
+    }
+
+    #[test]
+    fn details_text_is_plain_and_unwrapped() {
+        let mut d = Device::new(Ipv4Addr::new(192, 168, 1, 1));
+        d.name = Some("Home Router".into());
+        d.hostname = Some("a-very-long-hostname.mynetworksettings.example.com".into());
+        let mut m = crate::mdns::MdnsInfo { hostname: None, services: Default::default(), txt: Default::default() };
+        m.services.insert("airplay".into(), "Home Router".into());
+        m.txt.entry("airplay".into()).or_default().insert("model".into(), "AppleTV14,1".into());
+        d.mdns = Some(m);
+        let text = details_text(&d);
+        assert!(text.starts_with("Home Router\n"));
+        assert!(text.contains("Hostname      a-very-long-hostname.mynetworksettings.example.com\n"));
+        assert!(text.contains("airplay       Home Router\n              model = AppleTV14,1\n"));
+        assert!(text.lines().all(|l| l == l.trim_end()));
     }
 
     #[test]
