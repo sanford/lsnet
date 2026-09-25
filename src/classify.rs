@@ -328,7 +328,11 @@ fn name(d: &Device) -> Option<String> {
             // RAOP instances are "<MAC>@<name>".
             .map(|n| n.rsplit_once('@').map_or(n.as_str(), |(_, name)| name).to_string())
     });
-    let hostname = |h: &String| h.split('.').next().unwrap_or(h).to_string();
+    // `.local` names are kept whole so they can be pasted into a browser or
+    // ssh; other DNS names are shortened to the host part.
+    let hostname = |h: &String| {
+        if h.ends_with(".local") { h.clone() } else { h.split('.').next().unwrap_or(h).to_string() }
+    };
     [
         service_name,
         d.ssdp.as_ref().and_then(|s| s.friendly_name.clone()),
@@ -343,12 +347,13 @@ fn name(d: &Device) -> Option<String> {
 /// Machine-generated names that tell a person nothing.
 fn is_junk_name(n: &str) -> bool {
     let n = n.trim();
+    let n = n.strip_suffix(".local").unwrap_or(n);
     let hex = |s: &str| s.len() >= 8 && s.chars().all(|c| c.is_ascii_hexdigit() || c == '-');
     n.is_empty()
         || hex(n)
         // Brother printers default to "BRW" + MAC address.
         || n.len() == 15 && n.to_ascii_lowercase().starts_with("brw") && hex(&n[3..])
-        || ["localhost", "wlan0", "eth0", "espressif", "unknown"].contains(&n.to_ascii_lowercase().as_str())
+        || ["localhost", "none", "wlan0", "eth0", "espressif", "unknown"].contains(&n.to_ascii_lowercase().as_str())
 }
 
 fn kasa_model(s: &str) -> Option<String> {
@@ -495,6 +500,8 @@ mod tests {
     fn junk_names() {
         assert!(is_junk_name("36814e2569ca121f"));
         assert!(is_junk_name("brwc0b5d7e7747d"));
+        assert!(is_junk_name("36814e2569ca121f.local"));
+        assert!(!is_junk_name("bitaxe01.local"));
         assert!(is_junk_name("wlan0"));
         assert!(!is_junk_name("bedroom"));
         assert!(!is_junk_name("ep25"));

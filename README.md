@@ -48,6 +48,8 @@ cargo build --release
 ./target/release/lsnet
 ```
 
+While hacking on it, `./run.sh [ARGS]` builds, installs to `~/.local/bin`, and runs in one step.
+
 ## Usage
 
 ```
@@ -69,6 +71,16 @@ lsnet -v               # show the evidence: hostnames, ports, services
 lsnet -t 3000          # wait longer for sleepy Wi-Fi devices
 lsnet --json | jq '.[] | select(.type == "Printer")'
 ```
+
+### Device names
+
+The NAME column shows the friendliest name a device gives itself, in this order:
+
+1. The name set in its app or settings, from Bonjour or UPnP ("Living Room", "Office speaker")
+2. Its `.local` hostname, kept whole ("octopi.local", "homeassistant.local")
+3. The host part of its DNS name from your router ("fhrouter")
+
+`.local` names are shown in full because you can use them directly, even when the device's IP address changes. Try `http://octopi.local` in a browser, or `ssh pi@octopi.local`. Machine-generated names like `36814e2569ca121f.local` are hidden. Run `lsnet --json` to see every name a device reported, including its `.local` hostname under `mdns.hostname`.
 
 ## How it works
 

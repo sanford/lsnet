@@ -60,7 +60,7 @@ const TXT_KEYS: &[&str] = &[
 
 #[derive(Default, Clone, Serialize)]
 pub struct MdnsInfo {
-    /// The device's `.local` host name, without the suffix.
+    /// The device's host name, e.g. `living-room.local`.
     pub hostname: Option<String>,
     /// Service type (e.g. "airplay") → instance name (e.g. "Living Room").
     pub services: BTreeMap<String, String>,
@@ -206,7 +206,7 @@ fn resolve(rec: Records) -> HashMap<Ipv4Addr, MdnsInfo> {
         let ip = host.and_then(|h| rec.a.get(h)).copied().unwrap_or(*src);
         let info = out.entry(ip).or_default();
         if let Some(h) = host {
-            info.hostname.get_or_insert_with(|| h.trim_end_matches(".local").to_string());
+            info.hostname.get_or_insert_with(|| h.clone());
         }
         info.services.insert(service.clone(), instance);
         if let Some(kv) = rec.txt.get(key) {
@@ -216,7 +216,7 @@ fn resolve(rec: Records) -> HashMap<Ipv4Addr, MdnsInfo> {
     // Hosts that only answered with an address record still count.
     for (host, ip) in &rec.a {
         let info = out.entry(*ip).or_default();
-        info.hostname.get_or_insert_with(|| host.trim_end_matches(".local").to_string());
+        info.hostname.get_or_insert_with(|| host.clone());
     }
     out
 }
