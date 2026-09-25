@@ -24,6 +24,7 @@ fn identify(d: &Device) -> Option<Id> {
         .or_else(|| from_http(d))
         .or_else(|| from_services(d))
         .or_else(|| from_ports(d))
+        .or_else(|| from_brand_names(d))
         .or_else(|| from_vendor(d))
 }
 
@@ -113,8 +114,8 @@ fn from_ssdp(d: &Device) -> Option<Id> {
     Some((kind, model))
 }
 
-/// Naming conventions: many devices ship with a hostname that says what they are.
-fn from_names(d: &Device) -> Option<Id> {
+/// Every name a device goes by, lowercased.
+fn all_names(d: &Device) -> Vec<String> {
     let mut names: Vec<String> = [
         d.hostname.as_deref(),
         d.mdns.as_ref().and_then(|m| m.hostname.as_deref()),
@@ -125,16 +126,25 @@ fn from_names(d: &Device) -> Option<Id> {
     .map(str::to_ascii_lowercase)
     .collect();
     names.dedup();
+    names
+}
 
-    for n in &names {
+/// Naming conventions: many devices ship with a hostname that says what they are.
+fn from_names(d: &Device) -> Option<Id> {
+    for n in &all_names(d) {
         let first = n.split(['.', ' ']).next().unwrap_or(n);
+        if let Some(id) = xiaomi(first) {
+            return Some(id);
+        }
         // TP-Link Kasa plugs and bulbs name themselves after their model number.
         if let Some(model) = kasa_model(first) {
             let kind = if model.starts_with("KL") || model.starts_with("LB") { "Smart light" } else { "Smart plug" };
             return Some((kind, Some(format!("TP-Link Kasa {model}"))));
         }
         let has = |needle: &str| n.contains(needle);
-        let id: Option<Id> = if has("bitaxe") {
+        let id: Option<Id> = if n.starts_with("amazonaqm") {
+            Some(("Air monitor", Some("Amazon Smart Air Quality Monitor".into())))
+        } else if has("bitaxe") {
             Some(("Bitcoin miner", Some("Bitaxe".into())))
         } else if has("nerdqaxe") {
             Some(("Bitcoin miner", Some("NerdQAxe".into())))
@@ -198,6 +208,58 @@ fn from_names(d: &Device) -> Option<Id> {
         }
     }
     None
+}
+
+/// Brand-only naming conventions, consulted after services and ports so that
+/// anything more specific (an Echo advertising Spotify is a speaker) wins.
+fn from_brand_names(d: &Device) -> Option<Id> {
+    let names = all_names(d);
+    if names.iter().any(|n| n.starts_with("amazon-")) {
+        return Some(("Amazon device", Some("Amazon".into())));
+    }
+    None
+}
+
+/// Xiaomi's Mi Home ecosystem names devices `<brand>-<category>-<model>_miio<id>`
+/// (or `_mibt<id>`), e.g. `zhimi-fan-za5_mibta3f0` or `roborock-vacuum-s5_miio12345`.
+fn xiaomi(name: &str) -> Option<Id> {
+    let (model, suffix) = name.rsplit_once('_')?;
+    if !(suffix.starts_with("miio") || suffix.starts_with("mibt")) {
+        return None;
+    }
+    let mut parts = model.splitn(3, '-');
+    let (brand, category, variant) = (parts.next()?, parts.next()?, parts.next()?);
+    let kind = match category {
+        "fan" => "Fan",
+        "airpurifier" | "airfresh" => "Air purifier",
+        "humidifier" | "derh" => "Climate control",
+        "heater" | "aircondition" | "acpartner" => "Climate control",
+        "airmonitor" | "airp" => "Air monitor",
+        "light" | "lamp" | "ceiling" | "bslamp" | "bulb" | "strip" => "Smart light",
+        "plug" | "switch" | "powerstrip" | "outlet" => "Smart plug",
+        "vacuum" | "mop" => "Robot vacuum",
+        "gateway" | "hub" => "Smart home hub",
+        "camera" | "cateye" => "Camera",
+        "lock" => "Lock",
+        "sensor" | "weather" => "Sensor",
+        "curtain" => "Blinds",
+        "kettle" | "cooker" | "oven" | "fridge" | "washer" => "Appliance",
+        "speaker" | "wifispeaker" => "Speaker",
+        _ => "Smart home",
+    };
+    let maker = match brand {
+        "zhimi" => "Smartmi",
+        "yeelink" => "Yeelight",
+        "roborock" | "rockrobo" => "Roborock",
+        "lumi" => "Aqara",
+        "dreame" => "Dreame",
+        "viomi" => "Viomi",
+        "deerma" => "Deerma",
+        "philips" => "Philips",
+        _ => "Xiaomi",
+    };
+    // The miio model identifier, as the Mi Home app and integrations know it.
+    Some((kind, Some(format!("{maker} {brand}.{category}.{variant}"))))
 }
 
 fn from_http(d: &Device) -> Option<Id> {
@@ -316,28 +378,35 @@ fn from_vendor(d: &Device) -> Option<Id> {
 }
 
 /// The friendliest name the device gives itself.
+///
+/// Names people set themselves (AirPlay, HomeKit, Cast) come first. Next is
+/// the device's primary `.local` name, kept whole so it can be pasted into a
+/// browser or ssh, which beats generic service labels like Home Assistant's
+/// "Home" or a file share's name. Router DNS names are shortened to the host.
 fn name(d: &Device) -> Option<String> {
     let m = d.mdns.as_ref();
-    let service_name = m.and_then(|m| {
-        if let Some(fname) = m.txt.get("googlecast").and_then(|t| t.get("fn")) {
-            return Some(fname.clone());
-        }
-        ["device-info", "airplay", "companion-link", "raop", "hap", "smb", "home-assistant", "ipp", "printer"]
+    let service = |services: &[&str]| -> Option<String> {
+        let m = m?;
+        services
             .iter()
-            .find_map(|s| m.services.get(*s))
+            .filter_map(|s| m.services.get(*s))
             // RAOP instances are "<MAC>@<name>".
             .map(|n| n.rsplit_once('@').map_or(n.as_str(), |(_, name)| name).to_string())
-    });
-    // `.local` names are kept whole so they can be pasted into a browser or
-    // ssh; other DNS names are shortened to the host part.
-    let hostname = |h: &String| {
-        if h.ends_with(".local") { h.clone() } else { h.split('.').next().unwrap_or(h).to_string() }
+            .find(|n| !is_junk_name(n))
     };
+    let local = m.and_then(|m| m.hostname.clone()).filter(|h| h.ends_with(".local") && !is_junk_name(h));
+    let cast = m.and_then(|m| m.txt.get("googlecast")?.get("fn").cloned());
+    let personal = cast.or_else(|| service(&["device-info", "airplay", "companion-link", "raop", "hap"]));
+    let dns = d.hostname.as_ref().map(|h| {
+        if h.ends_with(".local") { h.clone() } else { h.split('.').next().unwrap_or(h).to_string() }
+    });
     [
-        service_name,
+        personal,
+        local,
+        service(&["smb", "home-assistant", "ipp", "printer"]),
         d.ssdp.as_ref().and_then(|s| s.friendly_name.clone()),
-        m.and_then(|m| m.hostname.as_ref()).map(hostname),
-        d.hostname.as_ref().map(hostname),
+        m.and_then(|m| m.hostname.clone()),
+        dns,
     ]
     .into_iter()
     .flatten()
@@ -494,6 +563,18 @@ mod tests {
         assert_eq!(kasa_model("kl420").as_deref(), Some("KL420"));
         assert_eq!(kasa_model("hsbc"), None);
         assert_eq!(kasa_model("epson"), None);
+    }
+
+    #[test]
+    fn xiaomi_names() {
+        assert_eq!(xiaomi("zhimi-fan-za5_mibta3f0"), Some(("Fan", Some("Smartmi zhimi.fan.za5".into()))));
+        assert_eq!(
+            xiaomi("roborock-vacuum-s5_miio12345678"),
+            Some(("Robot vacuum", Some("Roborock roborock.vacuum.s5".into())))
+        );
+        assert_eq!(xiaomi("yeelink-light-color1_miio1"), Some(("Smart light", Some("Yeelight yeelink.light.color1".into()))));
+        assert_eq!(xiaomi("zhimi-fan-za5"), None);
+        assert_eq!(xiaomi("my_laptop"), None);
     }
 
     #[test]

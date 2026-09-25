@@ -131,7 +131,7 @@ fn run(args: &Args) -> Result<(), String> {
         let rest = rt.block_on(async {
             tokio::join!(
                 probe::scan(&targets, wait),
-                mdns::discover(ifc.ip, wait),
+                mdns::discover(ifc.ip, &targets, wait),
                 ssdp::discover(ifc.ip, ifc.net, wait, grace),
             )
         });

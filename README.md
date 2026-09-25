@@ -79,9 +79,10 @@ lsnet --json | jq '.[] | select(.type == "Printer")'
 
 The NAME column shows the friendliest name a device gives itself, in this order:
 
-1. The name set in its app or settings, from Bonjour or UPnP ("Living Room", "Office speaker")
-2. Its `.local` hostname, kept whole ("octopi.local", "homeassistant.local")
-3. The host part of its DNS name from your router ("fhrouter")
+1. A name someone set in its app or settings, from AirPlay, HomeKit or Cast ("Living Room", "Office speaker")
+2. Its primary `.local` hostname, kept whole ("octopi.local", "homeassistant.local")
+3. A generic service or UPnP name (a file share, a printer queue, "Home Router")
+4. The host part of its DNS name from your router ("fhrouter")
 
 When MAC vendors are known (always on Linux, and with `sudo` on macOS), the column becomes NAME/VENDOR. A device with none of the names above shows its manufacturer instead, in regular weight rather than bold, so you can tell it apart from a real name:
 
@@ -107,7 +108,7 @@ Empty cells are filled with dimmed dots, so even a row with little information i
 | **ARP sweep** | Every device that has an IP address, including ones with no open ports, plus its MAC address | yes (or `CAP_NET_RAW` on Linux) |
 | **ARP cache** | MAC addresses the kernel learned during the scan | no (Linux only) |
 | **TCP probe** | Live hosts, since even a refused connection proves a device is there, and which common ports are open | no |
-| **mDNS / Bonjour** | Friendly names ("Living Room") and model identifiers from TXT records (`AppleTV14,1`, Chromecast `md=`, printer `ty=`, HomeKit categories) | no |
+| **mDNS / Bonjour** | Friendly names ("Living Room") and model identifiers from TXT records (`AppleTV14,1`, Chromecast `md=`, printer `ty=`, HomeKit categories), plus each device's primary `.local` name from a reverse lookup of its address | no |
 | **SSDP / UPnP** | Manufacturer, model and name from each device's UPnP description, which is how routers, TVs and NASes usually identify themselves | no |
 | **Reverse DNS** | Hostnames from your router's DHCP leases | no |
 | **HTTP banner** | `Server` header and page `<title>` from web UIs | no |

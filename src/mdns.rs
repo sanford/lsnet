@@ -6,6 +6,11 @@
 //! port 5353). Any types we learn about get queried in a second round.
 //! Records are resolved instance → SRV target → A record, so answers from a
 //! Bonjour sleep proxy on behalf of a sleeping Mac are credited correctly.
+//!
+//! We also ask every address for its own name with a reverse lookup
+//! (`20.1.168.192.in-addr.arpa`). That finds a device's primary `.local`
+//! name even when it never advertises it: Home Assistant, for one, announces
+//! its service under a random hex host but answers to `homeassistant.local`.
 
 use serde::Serialize;
 use simple_dns::rdata::RData;
@@ -50,6 +55,7 @@ const SERVICE_TYPES: &[&str] = &[
     "_sleep-proxy._udp.local",
     "_rdlink._tcp.local",
     "_nvstream._tcp.local",
+    "_umbrel._tcp.local",
 ];
 
 /// TXT keys that carry model or identity information; everything else is noise.
@@ -60,7 +66,7 @@ const TXT_KEYS: &[&str] = &[
 
 #[derive(Default, Clone, Serialize)]
 pub struct MdnsInfo {
-    /// The device's host name, e.g. `living-room.local`.
+    /// The device's primary host name, e.g. `living-room.local`.
     pub hostname: Option<String>,
     /// Service type (e.g. "airplay") → instance name (e.g. "Living Room").
     pub services: BTreeMap<String, String>,
@@ -76,18 +82,27 @@ struct Records {
     txt: HashMap<String, BTreeMap<String, String>>,
     a: HashMap<String, Ipv4Addr>,
     types: HashSet<String>,
+    /// Answers to reverse lookups: address → the name the device calls itself.
+    reverse: HashMap<Ipv4Addr, String>,
 }
 
-pub async fn discover(local_ip: Ipv4Addr, wait: Duration) -> HashMap<Ipv4Addr, MdnsInfo> {
+pub async fn discover(
+    local_ip: Ipv4Addr,
+    targets: &[Ipv4Addr],
+    wait: Duration,
+) -> HashMap<Ipv4Addr, MdnsInfo> {
     let Ok(sock) = UdpSocket::bind((local_ip, 0)).await else {
         return HashMap::new();
     };
     let deadline = Instant::now() + wait;
     let resend_at = Instant::now() + wait / 3;
 
+    // Only the owner of an address answers its reverse lookup, so asking about
+    // every address up front costs a few packets and no extra time.
     let initial: Vec<String> = std::iter::once(META)
         .chain(SERVICE_TYPES.iter().copied())
         .map(String::from)
+        .chain(targets.iter().map(|ip| reverse_name(*ip)))
         .collect();
     let mut asked: HashSet<String> = initial.iter().cloned().collect();
     send_queries(&sock, &initial).await;
@@ -147,7 +162,9 @@ fn absorb(rec: &mut Records, packet: &Packet, src: Ipv4Addr) {
         match &r.rdata {
             RData::PTR(ptr) => {
                 let target = ptr.0.to_string();
-                if key == META {
+                if let Some(ip) = parse_reverse(&key) {
+                    rec.reverse.insert(ip, target.to_ascii_lowercase());
+                } else if key == META {
                     rec.types.insert(target.to_ascii_lowercase());
                 } else {
                     let tkey = target.to_ascii_lowercase();
@@ -179,6 +196,22 @@ fn absorb(rec: &mut Records, packet: &Packet, src: Ipv4Addr) {
             _ => {}
         }
     }
+}
+
+/// 192.168.1.20 → `20.1.168.192.in-addr.arpa`
+fn reverse_name(ip: Ipv4Addr) -> String {
+    let [a, b, c, d] = ip.octets();
+    format!("{d}.{c}.{b}.{a}.in-addr.arpa")
+}
+
+fn parse_reverse(name: &str) -> Option<Ipv4Addr> {
+    let octets: Vec<u8> = name
+        .strip_suffix(".in-addr.arpa")?
+        .split('.')
+        .map(|o| o.parse().ok())
+        .collect::<Option<_>>()?;
+    let [d, c, b, a] = octets[..] else { return None };
+    Some(Ipv4Addr::new(a, b, c, d))
 }
 
 /// `Living Room._airplay._tcp.local` → ("Living Room", "airplay")
@@ -218,12 +251,26 @@ fn resolve(rec: Records) -> HashMap<Ipv4Addr, MdnsInfo> {
         let info = out.entry(*ip).or_default();
         info.hostname.get_or_insert_with(|| host.clone());
     }
+    // The name a device gives for its own address is its primary one, and
+    // beats whatever host its services happen to be registered under.
+    for (ip, name) in rec.reverse {
+        out.entry(ip).or_default().hostname = Some(name);
+    }
     out
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reverse_names_round_trip() {
+        let ip = Ipv4Addr::new(192, 168, 1, 20);
+        assert_eq!(reverse_name(ip), "20.1.168.192.in-addr.arpa");
+        assert_eq!(parse_reverse(&reverse_name(ip)), Some(ip));
+        assert_eq!(parse_reverse("_airplay._tcp.local"), None);
+        assert_eq!(parse_reverse("1.2.3.in-addr.arpa"), None);
+    }
 
     #[test]
     fn splits_instances() {
