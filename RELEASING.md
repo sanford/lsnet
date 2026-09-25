@@ -1,8 +1,8 @@
 # Releasing lsnet
 
-A release is a version tag on this repo plus a formula update in the Homebrew tap, [sanford/homebrew-tap](https://github.com/sanford/homebrew-tap). Homebrew builds from the source tarball GitHub serves for each tag, so no binaries need to be uploaded.
+A release is a version tag on this repo, a formula update in the Homebrew tap ([sanford/homebrew-tap](https://github.com/sanford/homebrew-tap)), and a GitHub Release with notes. Homebrew builds from the source tarball GitHub serves for each tag, so no binaries need to be uploaded.
 
-The examples below use `0.2.0`. Substitute the real version.
+The examples below release `0.2.0` after `0.1.0`. Substitute the real versions.
 
 ## 1. Prepare
 
@@ -109,13 +109,31 @@ brew audit --strict --online sanford/tap/lsnet
 
 If something is wrong, fix it and push to the tap again. If the source itself is broken, cut a new patch release instead of changing the tag.
 
-## 7. Optional: GitHub release notes
+## 7. Publish release notes
 
-A GitHub Release adds a changelog page for the tag. Homebrew doesn't need it. Using the GitHub CLI, logged in with an account that can write to `sanford/lsnet` (check with `gh auth status`):
+Every release gets a GitHub Release with notes written by hand. Changes go straight to `main` without pull requests, so `gh release create --generate-notes` would produce little more than a compare link.
+
+List what changed since the last release:
 
 ```sh
-gh release create v0.2.0 --title "lsnet 0.2.0" --generate-notes
+git log --oneline v0.1.0..v0.2.0
 ```
+
+Write the notes for people who use `lsnet`, not for people who work on it. Leave out refactors and README-only commits. A good layout:
+
+- **A short section for each notable change,** saying what it does and how to use it.
+- **"Upgrading from 0.1.0",** if a default, flag or output format changed. Say what to run to get the old behavior, and whether scripts need changes.
+- **A compare link** on the last line: `https://github.com/sanford/lsnet/compare/v0.1.0...v0.2.0`
+
+Save the notes to a file outside the repo, then publish them. This needs the GitHub CLI logged in with an account that can write to `sanford/lsnet`. `gh api repos/sanford/lsnet --jq .permissions.push` should print `true`.
+
+```sh
+gh release create v0.2.0 -R sanford/lsnet --title "lsnet 0.2.0" --notes-file /tmp/notes-0.2.0.md --verify-tag
+```
+
+`--verify-tag` makes `gh` fail if the tag hasn't been pushed, rather than creating a new tag. To fix a typo afterwards, use `gh release edit v0.2.0 -R sanford/lsnet --notes-file ...`. Editing the notes doesn't touch the tag or the tarball.
+
+[The 0.2.0 release](https://github.com/sanford/lsnet/releases/tag/v0.2.0) is an example.
 
 ## Testing on Linux
 
@@ -142,3 +160,4 @@ The first scan runs as root and uses raw ARP. The second runs unprivileged and s
 - [ ] Tarball checksum taken, and the tarball builds with `--locked`
 - [ ] `Formula/lsnet.rb` `url` and `sha256` updated; `brew style` clean; tap pushed
 - [ ] `brew upgrade`, `brew test` and `brew audit --strict --online` pass
+- [ ] GitHub Release published with hand-written notes, including upgrade notes if any behavior changed
