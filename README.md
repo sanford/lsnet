@@ -5,24 +5,24 @@
 ```
 $ lsnet
  lsnet  14 devices on 192.168.1.0/24 (en0) in 2.0s
-┌ Devices (14) ─────────────────────────────────────────────┐┌ Living Room ────────────────────────────────┐
-│  IP              NAME               TYPE                  ││ TV / streamer · Apple TV 4K (3rd gen)       │
-│  192.168.1.1     Home Router        Router (gateway)      ││                                             │
-│  192.168.1.8     Brother HL-L2350DW Printer               ││ IP            192.168.1.52                  │
-│  192.168.1.14    diskstation        NAS                   ││ Hostname      living-room                   │
-│› 192.168.1.52    Living Room        TV / streamer         ││ Open ports    7000 AirPlay · 62078 iOS sync │
-│  192.168.1.60    Kitchen            Speaker               ││                                             │
-│  192.168.1.71    Office speaker     Speaker               ││ Bonjour (mDNS)                              │
-│  192.168.1.88    kp115              Smart plug            ││ Name          Living-Room.local             │
-│  192.168.1.90    blink-mini         Camera                ││ airplay        Living Room                  │
-│  192.168.1.112   alex-phone         Phone / tablet        ││                 model = AppleTV14,1         │
-│  192.168.1.130   raspberrypi.local  Computer              ││ raop           6C4A85D1E0F2@Living Room     │
-│  192.168.1.150   pihole             DNS server            ││                 am = AppleTV14,1            │
-│  192.168.1.196   Alex's MacBook Pro Computer (this device)││ companion-link Living Room                  │
-│  192.168.1.201   ·                  Computer              ││                 rpmd = AppleTV14,1          │
-│  192.168.1.203   ·                                        ││                                             │
-│                                                           ││                                             │
-└───────────────────────────────────────────────────────────┘└─────────────────────────────────────────────┘
+┌ Devices (14) ─────────────────────────────────────────────┐┌ Living Room ──────────────────────────────────┐
+│  IP              NAME               TYPE                  ││ TV / streamer · Apple TV 4K (3rd gen)         │
+│  192.168.1.1     Home Router        Router (gateway)      ││                                               │
+│  192.168.1.8     Brother HL-L2350DW Printer               ││ IP             192.168.1.52                   │
+│  192.168.1.14    diskstation        NAS                   ││ Hostname       living-room                    │
+│› 192.168.1.52    Living Room        TV / streamer         ││ Open ports     7000 AirPlay · 62078 iOS sync  │
+│  192.168.1.60    Kitchen            Speaker               ││                                               │
+│  192.168.1.71    Office speaker     Speaker               ││ Bonjour (mDNS)                                │
+│  192.168.1.88    kp115              Smart plug            ││ Name           Living-Room.local              │
+│  192.168.1.90    blink-mini         Camera                ││ airplay        Living Room                    │
+│  192.168.1.112   alex-phone         Phone / tablet        ││                model = AppleTV14,1            │
+│  192.168.1.130   raspberrypi.local  Computer              ││ raop           6C4A85D1E0F2@Living Room       │
+│  192.168.1.150   pihole             DNS server            ││                am = AppleTV14,1               │
+│  192.168.1.196   Alex's MacBook Pro Computer (this device)││ companion-link Living Room                    │
+│  192.168.1.201   ·                  Computer              ││                rpmd = AppleTV14,1             │
+│  192.168.1.203   ·                                        ││                                               │
+│                                                           ││                                               │
+└───────────────────────────────────────────────────────────┘└───────────────────────────────────────────────┘
  ↑↓ move  ⏎ copy IP  / filter  r rescan  ? help  q quit
 ```
 
