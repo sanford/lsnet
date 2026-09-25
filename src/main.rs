@@ -263,6 +263,15 @@ const NOISY_SERVICES: &[&str] = &[
     "dnssd-server", "device-info", "companion-link",
 ];
 
+/// A table cell, or a dimmed "-" when there's nothing to show, so every
+/// column stays filled and rows are easy to follow across.
+fn text(value: Option<&str>) -> Cell {
+    match value.filter(|v| !v.is_empty()) {
+        Some(v) => Cell::new(v),
+        None => Cell::new("-").fg(Color::DarkGrey),
+    }
+}
+
 fn print_table(devices: &[Device], verbose: bool) {
     // Without raw access there are no MACs at all; don't waste two columns on blanks.
     let show_mac = devices.iter().any(|d| d.mac.is_some() && !d.this_device);
@@ -291,18 +300,18 @@ fn print_table(devices: &[Device], verbose: bool) {
         };
         let mut row = vec![
             Cell::new(d.ip).fg(Color::Green),
-            Cell::new(d.name.as_deref().unwrap_or("")).add_attribute(Attribute::Bold),
+            text(d.name.as_deref()).add_attribute(Attribute::Bold),
             kind,
-            Cell::new(d.model.as_deref().unwrap_or("")),
+            text(d.model.as_deref()),
         ];
         if show_mac {
             let vendor = match (d.vendor, d.randomized_mac) {
                 (Some(v), _) => Cell::new(v),
                 (None, true) => Cell::new("(private MAC)").fg(Color::DarkGrey),
-                (None, false) => Cell::new(""),
+                (None, false) => text(None),
             };
             row.push(vendor);
-            row.push(Cell::new(d.mac.as_deref().unwrap_or("")).fg(Color::DarkGrey));
+            row.push(text(d.mac.as_deref()).fg(Color::DarkGrey));
         }
         if verbose {
             let ports = d.open_ports.iter().map(u16::to_string).collect::<Vec<_>>().join(",");
@@ -318,9 +327,9 @@ fn print_table(devices: &[Device], verbose: bool) {
                         .join(",")
                 })
                 .unwrap_or_default();
-            row.push(Cell::new(d.hostname.as_deref().unwrap_or("")));
-            row.push(Cell::new(ports).fg(Color::DarkGrey));
-            row.push(Cell::new(services).fg(Color::DarkGrey));
+            row.push(text(d.hostname.as_deref()));
+            row.push(text(Some(&ports)).fg(Color::DarkGrey));
+            row.push(text(Some(&services)).fg(Color::DarkGrey));
         }
         table.add_row(row);
     }
