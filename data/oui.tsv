@@ -1,3 +1,15 @@
+# MAC address prefix -> vendor name, used by lsnet.
+#
+# Derived from Wireshark's "manuf" database
+# (https://www.wireshark.org/download/automated/data/manuf), which Wireshark
+# generates from the IEEE OUI registries (https://standards-oui.ieee.org/).
+# Vendor names were shortened by scripts/update-oui.py.
+#
+# Wireshark: Copyright 1998 Gerald Combs <gerald@wireshark.org> and contributors.
+# SPDX-License-Identifier: GPL-2.0-or-later
+#
+# Format: one assignment per line, HEXPREFIX, a tab, then the vendor name.
+# HEXPREFIX is 6, 7 or 9 hex digits (24, 28 or 36-bit assignments).
 000000	Officially Xerox but 0:0
 000001	Xerox
 000002	Xerox

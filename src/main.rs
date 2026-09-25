@@ -263,12 +263,49 @@ const NOISY_SERVICES: &[&str] = &[
     "dnssd-server", "device-info", "companion-link",
 ];
 
-/// A table cell, or a dimmed "-" when there's nothing to show, so every
-/// column stays filled and rows are easy to follow across.
-fn text(value: Option<&str>) -> Cell {
-    match value.filter(|v| !v.is_empty()) {
-        Some(v) => Cell::new(v),
-        None => Cell::new("-").fg(Color::DarkGrey),
+/// One table cell before rendering. Empty cells are drawn as a dimmed row
+/// of periods spanning the column, a leader line that carries the eye from
+/// the IP across to the data on the right.
+struct Field {
+    text: Option<String>,
+    color: Option<Color>,
+    bold: bool,
+}
+
+impl Field {
+    fn new(text: Option<&str>) -> Self {
+        let text = text.filter(|t| !t.is_empty()).map(String::from);
+        Field { text, color: None, bold: false }
+    }
+
+    fn fg(mut self, color: Color) -> Self {
+        self.color = Some(color);
+        self
+    }
+
+    fn bold(mut self) -> Self {
+        self.bold = true;
+        self
+    }
+
+    fn width(&self) -> usize {
+        self.text.as_deref().map_or(0, |t| t.chars().count())
+    }
+
+    fn render(self, column_width: usize) -> Cell {
+        match self.text {
+            Some(t) => {
+                let mut cell = Cell::new(t);
+                if let Some(c) = self.color {
+                    cell = cell.fg(c);
+                }
+                if self.bold {
+                    cell = cell.add_attribute(Attribute::Bold);
+                }
+                cell
+            }
+            None => Cell::new(".".repeat(column_width)).fg(Color::DarkGrey),
+        }
     }
 }
 
@@ -276,7 +313,9 @@ fn print_table(devices: &[Device], verbose: bool) {
     // Without raw access there are no MACs at all; don't waste two columns on blanks.
     let show_mac = devices.iter().any(|d| d.mac.is_some() && !d.this_device);
 
-    let mut header = vec!["IP", "NAME", "TYPE", "MODEL"];
+    // With vendors known, unnamed devices show their vendor in the NAME column.
+    let name_header = if show_mac { "NAME/VENDOR" } else { "NAME" };
+    let mut header = vec!["IP", name_header, "TYPE", "MODEL"];
     if show_mac {
         header.extend(["VENDOR", "MAC"]);
     }
@@ -284,54 +323,96 @@ fn print_table(devices: &[Device], verbose: bool) {
         header.extend(["HOSTNAME", "PORTS", "SERVICES"]);
     }
 
+    let rows: Vec<Vec<Field>> = devices.iter().map(|d| row(d, show_mac, verbose)).collect();
+    let widths: Vec<usize> = (0..header.len())
+        .map(|i| rows.iter().map(|r| r[i].width()).chain([header[i].len()]).max().unwrap_or(0))
+        .collect();
+
     let mut table = Table::new();
     table
         .load_style(presets::NOTHING)
         .set_content_arrangement(ContentArrangement::Dynamic)
         .set_header(header.into_iter().map(|h| Cell::new(h).add_attribute(Attribute::Bold)));
-
-    for d in devices {
-        let kind = match (d.kind.as_deref(), d.this_device, d.gateway) {
-            (k, true, _) => Cell::new(format!("{} (this device)", k.unwrap_or("Computer"))).fg(Color::Cyan),
-            (Some("Router") | None, _, true) => Cell::new("Router (gateway)").fg(Color::Yellow),
-            (Some(k), _, true) => Cell::new(format!("{k} (gateway)")).fg(Color::Yellow),
-            (Some(k), _, _) => Cell::new(k),
-            (None, _, _) => Cell::new("?").fg(Color::DarkGrey),
-        };
-        let mut row = vec![
-            Cell::new(d.ip).fg(Color::Green),
-            text(d.name.as_deref()).add_attribute(Attribute::Bold),
-            kind,
-            text(d.model.as_deref()),
-        ];
-        if show_mac {
-            let vendor = match (d.vendor, d.randomized_mac) {
-                (Some(v), _) => Cell::new(v),
-                (None, true) => Cell::new("(private MAC)").fg(Color::DarkGrey),
-                (None, false) => text(None),
-            };
-            row.push(vendor);
-            row.push(text(d.mac.as_deref()).fg(Color::DarkGrey));
-        }
-        if verbose {
-            let ports = d.open_ports.iter().map(u16::to_string).collect::<Vec<_>>().join(",");
-            let services = d
-                .mdns
-                .as_ref()
-                .map(|m| {
-                    m.services
-                        .keys()
-                        .filter(|s| !NOISY_SERVICES.contains(&s.as_str()))
-                        .cloned()
-                        .collect::<Vec<_>>()
-                        .join(",")
-                })
-                .unwrap_or_default();
-            row.push(text(d.hostname.as_deref()));
-            row.push(text(Some(&ports)).fg(Color::DarkGrey));
-            row.push(text(Some(&services)).fg(Color::DarkGrey));
-        }
-        table.add_row(row);
+    for r in rows {
+        table.add_row(r.into_iter().zip(&widths).map(|(f, &w)| f.render(w)));
     }
     println!("{table}");
+}
+
+fn row(d: &Device, show_mac: bool, verbose: bool) -> Vec<Field> {
+    let kind = match (d.kind.as_deref(), d.this_device, d.gateway) {
+        (k, true, _) => Field::new(Some(&format!("{} (this device)", k.unwrap_or("Computer")))).fg(Color::Cyan),
+        (Some("Router") | None, _, true) => Field::new(Some("Router (gateway)")).fg(Color::Yellow),
+        (Some(k), _, true) => Field::new(Some(&format!("{k} (gateway)"))).fg(Color::Yellow),
+        (Some(k), _, _) => Field::new(Some(k)),
+        (None, _, _) => Field::new(None),
+    };
+    let mut row = vec![
+        Field::new(Some(&d.ip.to_string())).fg(Color::Green),
+        // Real names are bold; a backfilled vendor isn't, so the two stay distinguishable.
+        match (d.name.as_deref(), d.vendor) {
+            (Some(n), _) => Field::new(Some(n)).bold(),
+            (None, Some(v)) if show_mac => Field::new(Some(v)),
+            (None, _) => Field::new(None),
+        },
+        kind,
+        Field::new(d.model.as_deref()),
+    ];
+    if show_mac {
+        row.push(match (d.vendor, d.randomized_mac) {
+            (Some(v), _) => Field::new(Some(v)),
+            (None, true) => Field::new(Some("(private MAC)")).fg(Color::DarkGrey),
+            (None, false) => Field::new(None),
+        });
+        row.push(Field::new(d.mac.as_deref()).fg(Color::DarkGrey));
+    }
+    if verbose {
+        let ports = d.open_ports.iter().map(u16::to_string).collect::<Vec<_>>().join(",");
+        let services = d
+            .mdns
+            .as_ref()
+            .map(|m| {
+                m.services
+                    .keys()
+                    .filter(|s| !NOISY_SERVICES.contains(&s.as_str()))
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(",")
+            })
+            .unwrap_or_default();
+        row.push(Field::new(d.hostname.as_deref()));
+        row.push(Field::new(Some(&ports)).fg(Color::DarkGrey));
+        row.push(Field::new(Some(&services)).fg(Color::DarkGrey));
+    }
+    row
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn device(name: Option<&str>, vendor: Option<&'static str>) -> Device {
+        let mut d = Device::new(Ipv4Addr::new(192, 168, 1, 50));
+        d.name = name.map(String::from);
+        d.vendor = vendor;
+        d.mac = vendor.map(|_| "b8:27:eb:01:02:03".into());
+        d
+    }
+
+    #[test]
+    fn vendor_backfills_missing_name() {
+        let r = row(&device(None, Some("Raspberry Pi")), true, false);
+        assert_eq!(r[1].text.as_deref(), Some("Raspberry Pi"));
+        assert!(!r[1].bold);
+
+        let r = row(&device(Some("octopi.local"), Some("Raspberry Pi")), true, false);
+        assert_eq!(r[1].text.as_deref(), Some("octopi.local"));
+        assert!(r[1].bold);
+    }
+
+    #[test]
+    fn no_backfill_without_mac_columns() {
+        let r = row(&device(None, Some("Raspberry Pi")), false, false);
+        assert_eq!(r[1].text, None);
+    }
 }

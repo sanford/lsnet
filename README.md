@@ -4,21 +4,23 @@
 
 ```
 $ lsnet
- IP             NAME                 TYPE                    MODEL
- 192.168.1.1    Home Router          Router (gateway)        Netgear RAX50
- 192.168.1.8    Brother HL-L2350DW   Printer                 Brother HL-L2350DW series
- 192.168.1.14   diskstation          NAS                     Synology DS920+
- 192.168.1.52   Living Room          TV / streamer           Apple TV 4K (3rd gen)
- 192.168.1.60   Kitchen              Speaker                 HomePod mini
- 192.168.1.71   Office speaker       Speaker                 Google Nest Mini
- 192.168.1.88   kp115                Smart plug              TP-Link Kasa KP115
- 192.168.1.90   blink-mini           Camera                  Blink Mini
- 192.168.1.112  alex-phone           Phone / tablet          iPhone / iPad
- 192.168.1.130  raspberrypi.local    Computer                Raspberry Pi
- 192.168.1.150  pihole               DNS server              Pi-hole
- 192.168.1.196  Alex's MacBook Pro   Computer (this device)  MacBook Pro (M4)
+ IP             NAME                TYPE                    MODEL
+ 192.168.1.1    Home Router         Router (gateway)        Netgear RAX50
+ 192.168.1.8    Brother HL-L2350DW  Printer                 Brother HL-L2350DW series
+ 192.168.1.14   diskstation         NAS                     Synology DS920+
+ 192.168.1.52   Living Room         TV / streamer           Apple TV 4K (3rd gen)
+ 192.168.1.60   Kitchen             Speaker                 HomePod mini
+ 192.168.1.71   Office speaker      Speaker                 Google Nest Mini
+ 192.168.1.88   kp115               Smart plug              TP-Link Kasa KP115
+ 192.168.1.90   blink-mini          Camera                  Blink Mini
+ 192.168.1.112  alex-phone          Phone / tablet          iPhone / iPad
+ 192.168.1.130  raspberrypi.local   Computer                Raspberry Pi
+ 192.168.1.150  pihole              DNS server              Pi-hole
+ 192.168.1.196  Alex's MacBook Pro  Computer (this device)  MacBook Pro (M4)
+ 192.168.1.201  ..................  Computer                .........................
+ 192.168.1.203  ..................  ......................  .........................
 
-12 devices on 192.168.1.0/24 (en0) in 2.0s
+14 devices on 192.168.1.0/24 (en0) in 2.0s
 ```
 
 It's meant to answer the question "what is that?" faster and more simply than [nmap](https://nmap.org). It isn't a port scanner or a security tool.
@@ -81,6 +83,19 @@ The NAME column shows the friendliest name a device gives itself, in this order:
 2. Its `.local` hostname, kept whole ("octopi.local", "homeassistant.local")
 3. The host part of its DNS name from your router ("fhrouter")
 
+When MAC vendors are known (always on Linux, and with `sudo` on macOS), the column becomes NAME/VENDOR. A device with none of the names above shows its manufacturer instead, in regular weight rather than bold, so you can tell it apart from a real name:
+
+```
+$ sudo lsnet
+ IP             NAME/VENDOR        TYPE            MODEL                  VENDOR         MAC
+ 192.168.1.52   Living Room        TV / streamer   Apple TV 4K (3rd gen)  Apple          f0:18:98:3c:62:8d
+ 192.168.1.77   Espressif          IoT device      Espressif              Espressif      24:0a:c4:1d:9e:02
+ 192.168.1.130  raspberrypi.local  Computer        Raspberry Pi           Raspberry Pi   b8:27:eb:5a:11:c4
+ 192.168.1.144  .................  Phone / laptop  .....................  (private MAC)  3a:91:5c:e2:07:1b
+```
+
+Empty cells are filled with dimmed dots, so even a row with little information is easy to follow from its IP address across to the columns on the right.
+
 `.local` names are shown in full because you can use them directly, even when the device's IP address changes. Try `http://octopi.local` in a browser, or `ssh pi@octopi.local`. Machine-generated names like `36814e2569ca121f.local` are hidden. Run `lsnet --json` to see every name a device reported, including its `.local` hostname under `mdns.hostname`.
 
 ## How it works
@@ -135,24 +150,30 @@ In `--json`, each device includes:
 
 - **macOS and Linux only.** Windows isn't supported. The raw-packet library needs Npcap there.
 - **IPv4 only.** Networks larger than /22 are narrowed to your local /24 to keep scans fast.
-- **Identification is heuristic.** Devices that announce nothing and have no open ports show up as `?`. Running with `sudo` at least adds their vendor.
+- **Identification is heuristic.** Devices that announce nothing and have no open ports show up with no type. Running with `sudo` at least adds their vendor, in the NAME/VENDOR column.
 - **The Linux ARP cache can be stale.** Entries for devices that just left the network can linger for a few seconds after they disconnect.
 - **Sleepy devices can be missed.** Phones and IoT devices in Wi-Fi power-save mode may not answer within the default window. Use `-t` to wait longer.
 
 ## Updating the vendor database
 
-MAC vendor names come from Wireshark's copy of the IEEE OUI registry, cleaned up (for example "Apple, Inc." becomes "Apple") and stored in `data/oui.tsv`. To refresh it:
+MAC vendor names come from Wireshark's copy of the IEEE OUI registry, cleaned up (for example "Apple, Inc." becomes "Apple") and stored in `data/oui.tsv` along with a license header (see [Third-party data](#third-party-data)). To refresh it:
 
 ```sh
 python3 scripts/update-oui.py
 ```
 
+Wireshark updates the database weekly and asks that it not be downloaded more often than that.
+
 ## Contributing
 
-Better identification rules are the most useful contribution. If `lsnet` shows `?` or gets a device wrong, open an issue with the output of `lsnet --json` for that device, with anything private removed. The rules live in [`src/classify.rs`](src/classify.rs).
+Better identification rules are the most useful contribution. If `lsnet` leaves a device's type blank or gets it wrong, open an issue with the output of `lsnet --json` for that device, with anything private removed. The rules live in [`src/classify.rs`](src/classify.rs).
 
 ## License
 
 Copyright (C) 2026 Sanford Lincoln
 
 `lsnet` is free software: you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version. See [LICENSE](LICENSE).
+
+### Third-party data
+
+`data/oui.tsv`, the MAC vendor database built into the binary, is derived from [Wireshark](https://www.wireshark.org)'s `manuf` database. Wireshark generates that database from the [IEEE OUI registries](https://standards-oui.ieee.org/). The file is Copyright 1998 Gerald Combs and contributors and is licensed under GPL-2.0-or-later, which allows it to be redistributed as part of `lsnet` under GPL-3.0-or-later.

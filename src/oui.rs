@@ -1,5 +1,6 @@
-//! MAC address → manufacturer, from the embedded IEEE registry
-//! (regenerate with `scripts/update-oui.py`).
+//! MAC address → manufacturer, from the embedded IEEE registry via
+//! Wireshark's `manuf` database (GPL-2.0-or-later; regenerate with
+//! `scripts/update-oui.py`).
 
 use pnet::util::MacAddr;
 use std::collections::HashMap;
@@ -9,7 +10,12 @@ static DB: &str = include_str!("../data/oui.tsv");
 
 fn table() -> &'static HashMap<&'static str, &'static str> {
     static TABLE: OnceLock<HashMap<&str, &str>> = OnceLock::new();
-    TABLE.get_or_init(|| DB.lines().filter_map(|l| l.split_once('\t')).collect())
+    TABLE.get_or_init(|| {
+        DB.lines()
+            .filter(|l| !l.starts_with('#'))
+            .filter_map(|l| l.split_once('\t'))
+            .collect()
+    })
 }
 
 /// Phones and laptops use a random "locally administered" MAC per network for privacy.

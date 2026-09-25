@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """Regenerate data/oui.tsv from Wireshark's manuf database.
 
+Usage: update-oui.py [path/to/manuf]  (downloads it when no path is given;
+Wireshark asks that it not be fetched more than once a week)
+
 Output lines are `HEXPREFIX<TAB>Vendor`, where HEXPREFIX is 6, 7 or 9 hex
 digits (24, 28 or 36-bit assignments). Vendor names are trimmed of corporate
 suffixes so they fit in a table column ("Apple, Inc." -> "Apple").
@@ -12,6 +15,23 @@ from pathlib import Path
 
 URL = "https://www.wireshark.org/download/automated/data/manuf"
 OUT = Path(__file__).resolve().parent.parent / "data" / "oui.tsv"
+
+# The data comes from Wireshark, so the output carries Wireshark's license
+# (GPL-2.0-or-later, which lsnet as a whole redistributes under GPL-3.0-or-later).
+HEADER = """\
+# MAC address prefix -> vendor name, used by lsnet.
+#
+# Derived from Wireshark's "manuf" database
+# (https://www.wireshark.org/download/automated/data/manuf), which Wireshark
+# generates from the IEEE OUI registries (https://standards-oui.ieee.org/).
+# Vendor names were shortened by scripts/update-oui.py.
+#
+# Wireshark: Copyright 1998 Gerald Combs <gerald@wireshark.org> and contributors.
+# SPDX-License-Identifier: GPL-2.0-or-later
+#
+# Format: one assignment per line, HEXPREFIX, a tab, then the vendor name.
+# HEXPREFIX is 6, 7 or 9 hex digits (24, 28 or 36-bit assignments).
+"""
 
 SUFFIXES = {
     "inc", "incorporated", "corp", "corporation", "co", "company", "ltd",
@@ -81,7 +101,7 @@ def main() -> None:
         rows.append(f"{hexpre}\t{clean(long_name)}")
 
     OUT.parent.mkdir(exist_ok=True)
-    OUT.write_text("\n".join(sorted(rows)) + "\n", encoding="utf-8")
+    OUT.write_text(HEADER + "\n".join(sorted(rows)) + "\n", encoding="utf-8")
     print(f"wrote {len(rows)} entries to {OUT}")
 
 
