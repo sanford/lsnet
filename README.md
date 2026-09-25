@@ -66,11 +66,12 @@ While hacking on it, `./run.sh [ARGS]` builds, installs to `~/.local/bin`, and r
 ```
 lsnet [OPTIONS]
 
-  -i, --interface <NAME>  Network interface to scan (default: the one your internet traffic uses)
+  -I, --interface <NAME>  Network interface to scan (default: the one your internet traffic uses)
   -v, --verbose           Also show hostnames, open ports and advertised services
       --json              Print results as JSON
   -t, --timeout <MS>      How long to wait for devices to answer [default: 1200]
       --no-dns            Skip reverse DNS lookups
+  -i, --interactive       Browse results, with every detail for the selected device
 ```
 
 Some examples:
@@ -80,6 +81,7 @@ lsnet                  # scan the local network
 sudo lsnet             # also show MAC addresses and vendors
 lsnet -v               # show the evidence: hostnames, ports, services
 lsnet -t 3000          # wait longer for sleepy Wi-Fi devices
+lsnet -i               # scroll through devices; enter or y copies the IP
 lsnet --json | jq '.[] | select(.type == "Printer")'
 ```
 
