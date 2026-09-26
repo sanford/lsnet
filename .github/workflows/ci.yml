@@ -1,8 +1,10 @@
 name: CI
 
-# Pushes only, never pull requests: the Windows job runs on a self-hosted
-# runner, and this repo is public, so code from forks must never reach it.
-# (Pushes to a fork run in the fork's own Actions, without our runner.)
+# Windows only; macOS and Linux are tested by hand before each release.
+#
+# Pushes only, never pull requests: the job runs on a self-hosted runner, and
+# this repo is public, so code from forks must never reach it. (Pushes to a
+# fork run in the fork's own Actions, without our runner.)
 on:
   push:
   workflow_dispatch:
@@ -11,19 +13,19 @@ permissions:
   contents: read
 
 jobs:
-  unix:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
+  # Runs the owner starts (a push, a manual run, a re-run) go straight
+  # through. Anyone else's wait here, on a GitHub-hosted runner, until the
+  # owner approves them in the `approval` environment.
+  approve:
+    if: github.triggering_actor != github.repository_owner
+    runs-on: ubuntu-latest
+    environment: approval
     steps:
-      - uses: actions/checkout@v5
-      - run: rustup toolchain install stable --profile minimal --component clippy
-      - run: cargo test --locked --release
-      - run: cargo clippy --locked --release --all-targets -- -D warnings
+      - run: echo "Approved for ${{ github.triggering_actor }}"
 
   windows:
+    needs: approve
+    if: ${{ !cancelled() && (needs.approve.result == 'success' || needs.approve.result == 'skipped') }}
     runs-on: [self-hosted, Windows, X64]
     # The toolchain is installed machine-wide in C:\Rust, shared with the
     # machine's own user, so the runner service needs no environment of its own.
