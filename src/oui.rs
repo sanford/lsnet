@@ -29,7 +29,9 @@ pub fn vendor(mac: MacAddr) -> Option<&'static str> {
         mac.0, mac.1, mac.2, mac.3, mac.4, mac.5
     );
     // Most specific assignment first: 36-bit, 28-bit, then 24-bit.
-    [9, 7, 6].iter().find_map(|&n| table().get(&hex[..n]).copied())
+    [9, 7, 6]
+        .iter()
+        .find_map(|&n| table().get(&hex[..n]).copied())
 }
 
 #[cfg(test)]
@@ -38,8 +40,14 @@ mod tests {
 
     #[test]
     fn looks_up_vendors() {
-        assert_eq!(vendor(MacAddr::new(0xf0, 0x18, 0x98, 1, 2, 3)), Some("Apple"));
-        assert_eq!(vendor(MacAddr::new(0xb8, 0x27, 0xeb, 1, 2, 3)), Some("Raspberry Pi"));
+        assert_eq!(
+            vendor(MacAddr::new(0xf0, 0x18, 0x98, 1, 2, 3)),
+            Some("Apple")
+        );
+        assert_eq!(
+            vendor(MacAddr::new(0xb8, 0x27, 0xeb, 1, 2, 3)),
+            Some("Raspberry Pi")
+        );
     }
 
     #[test]

@@ -45,7 +45,10 @@ fn from_mdns(d: &Device) -> Option<Id> {
 
     if let Some(md) = txt("googlecast", "md") {
         let lower = md.to_ascii_lowercase();
-        let kind = if ["mini", "home", "speaker", "audio"].iter().any(|k| lower.contains(k)) {
+        let kind = if ["mini", "home", "speaker", "audio"]
+            .iter()
+            .any(|k| lower.contains(k))
+        {
             "Speaker"
         } else if lower.contains("hub") {
             "Smart display"
@@ -55,7 +58,10 @@ fn from_mdns(d: &Device) -> Option<Id> {
         return Some((kind, Some(md.to_string())));
     }
 
-    if ["ipp", "ipps", "printer", "pdl-datastream"].iter().any(|s| m.services.contains_key(*s)) {
+    if ["ipp", "ipps", "printer", "pdl-datastream"]
+        .iter()
+        .any(|s| m.services.contains_key(*s))
+    {
         let model = ["ipp", "ipps", "printer", "pdl-datastream"]
             .iter()
             .find_map(|s| txt(s, "ty"))
@@ -67,7 +73,9 @@ fn from_mdns(d: &Device) -> Option<Id> {
         let model = txt("hap", "md").map(|md| {
             let instance = &m.services["hap"];
             match brand(instance) {
-                Some(b) if !md.to_ascii_lowercase().contains(&b.to_ascii_lowercase()) => format!("{b} {md}"),
+                Some(b) if !md.to_ascii_lowercase().contains(&b.to_ascii_lowercase()) => {
+                    format!("{b} {md}")
+                }
                 _ => md.to_string(),
             }
         });
@@ -76,7 +84,11 @@ fn from_mdns(d: &Device) -> Option<Id> {
 
     if let Some(mn) = txt("glinet", "mn") {
         let model = format!("GL.iNet {}", mn.to_ascii_uppercase());
-        let kind = if mn.starts_with("rm") { "KVM" } else { "Router" };
+        let kind = if mn.starts_with("rm") {
+            "KVM"
+        } else {
+            "Router"
+        };
         return Some((kind, Some(model)));
     }
 
@@ -88,16 +100,23 @@ fn from_ssdp(d: &Device) -> Option<Id> {
     let device_type = s.device_type.as_deref().unwrap_or("").to_ascii_lowercase();
     let maker = s.manufacturer.as_deref().unwrap_or("");
     let model = s.model_name.as_deref().map(|m| {
-        if maker.is_empty() || m.to_ascii_lowercase().starts_with(&maker.to_ascii_lowercase()) {
+        if maker.is_empty()
+            || m.to_ascii_lowercase()
+                .starts_with(&maker.to_ascii_lowercase())
+        {
             m.to_string()
         } else {
             format!("{maker} {m}")
         }
     });
     let lower_maker = maker.to_ascii_lowercase();
-    let kind = if device_type.contains("internetgatewaydevice") || device_type.contains("wfadevice") {
+    let kind = if device_type.contains("internetgatewaydevice") || device_type.contains("wfadevice")
+    {
         "Router"
-    } else if ["synology", "qnap", "asustor", "ugreen", "terramaster"].iter().any(|m| lower_maker.contains(m)) {
+    } else if ["synology", "qnap", "asustor", "ugreen", "terramaster"]
+        .iter()
+        .any(|m| lower_maker.contains(m))
+    {
         "NAS"
     } else if lower_maker.contains("sonos") {
         "Speaker"
@@ -139,12 +158,19 @@ fn from_names(d: &Device) -> Option<Id> {
         }
         // TP-Link Kasa plugs and bulbs name themselves after their model number.
         if let Some(model) = kasa_model(first) {
-            let kind = if model.starts_with("KL") || model.starts_with("LB") { "Smart light" } else { "Smart plug" };
+            let kind = if model.starts_with("KL") || model.starts_with("LB") {
+                "Smart light"
+            } else {
+                "Smart plug"
+            };
             return Some((kind, Some(format!("TP-Link Kasa {model}"))));
         }
         let has = |needle: &str| n.contains(needle);
         let id: Option<Id> = if n.starts_with("amazonaqm") {
-            Some(("Air monitor", Some("Amazon Smart Air Quality Monitor".into())))
+            Some((
+                "Air monitor",
+                Some("Amazon Smart Air Quality Monitor".into()),
+            ))
         } else if has("bitaxe") {
             Some(("Bitcoin miner", Some("Bitaxe".into())))
         } else if has("nerdqaxe") {
@@ -154,18 +180,45 @@ fn from_names(d: &Device) -> Option<Id> {
         } else if has("umbrel") {
             Some(("Home server", Some("Umbrel".into())))
         } else if has("awair") {
-            Some(("Air monitor", Some(if has("elem") { "Awair Element" } else { "Awair" }.into())))
+            Some((
+                "Air monitor",
+                Some(
+                    if has("elem") {
+                        "Awair Element"
+                    } else {
+                        "Awair"
+                    }
+                    .into(),
+                ),
+            ))
         } else if has("switchbot") {
-            Some(("Smart home hub", Some(if has("hub-2") { "SwitchBot Hub 2" } else { "SwitchBot" }.into())))
+            Some((
+                "Smart home hub",
+                Some(
+                    if has("hub-2") {
+                        "SwitchBot Hub 2"
+                    } else {
+                        "SwitchBot"
+                    }
+                    .into(),
+                ),
+            ))
         } else if has("blink") {
-            Some(("Camera", Some(if has("mini") { "Blink Mini" } else { "Blink" }.into())))
+            Some((
+                "Camera",
+                Some(if has("mini") { "Blink Mini" } else { "Blink" }.into()),
+            ))
         } else if has("wyze") {
             Some(("Camera", Some("Wyze".into())))
         } else if has("ring-") || n.starts_with("ring") {
             Some(("Doorbell / camera", Some("Ring".into())))
         } else if has("shelly") {
             Some(("Smart relay", Some("Shelly".into())))
-        } else if has("tasmota") || has("esphome") || n.starts_with("esp-") || n.starts_with("esp32") {
+        } else if has("tasmota")
+            || has("esphome")
+            || n.starts_with("esp-")
+            || n.starts_with("esp32")
+        {
             Some(("IoT device", None))
         } else if has("homeassistant") || has("home-assistant") {
             Some(("Home automation", Some("Home Assistant".into())))
@@ -366,7 +419,12 @@ fn from_ports(d: &Device) -> Option<Id> {
 fn from_generic_ports(d: &Device) -> Option<Id> {
     let has = |p: u16| d.open_ports.contains(&p);
     // Databases, message brokers and mail: something is running as a server.
-    if [1433, 1521, 1883, 3306, 5432, 5672, 6379, 27017, 25, 110, 143, 993, 995].into_iter().any(has) {
+    if [
+        1433, 1521, 1883, 3306, 5432, 5672, 6379, 27017, 25, 110, 143, 993, 995,
+    ]
+    .into_iter()
+    .any(has)
+    {
         return Some(("Server", None));
     }
     if has(445) {
@@ -389,7 +447,12 @@ fn from_vendor(d: &Device) -> Option<Id> {
     // Phones, tablets and laptops use per-network random MACs and rarely
     // listen on any ports. VMs and containers also use random-looking MACs,
     // but usually run services, so only guess when nothing is listening.
-    if d.vendor.is_none() && d.randomized_mac && d.open_ports.is_empty() && !d.gateway && !d.this_device {
+    if d.vendor.is_none()
+        && d.randomized_mac
+        && d.open_ports.is_empty()
+        && !d.gateway
+        && !d.this_device
+    {
         return Some(("Phone / laptop", None));
     }
     let v = d.vendor?;
@@ -401,10 +464,17 @@ fn from_vendor(d: &Device) -> Option<Id> {
         _ if lower.contains("roku") => "TV / streamer",
         _ if lower.contains("nintendo") || lower.contains("sony interactive") => "Game console",
         _ if lower.contains("synology") || lower.contains("qnap") => "NAS",
-        _ if lower.contains("ubiquiti") || lower.contains("netgear") || lower.contains("eero") => "Network gear",
+        _ if lower.contains("ubiquiti") || lower.contains("netgear") || lower.contains("eero") => {
+            "Network gear"
+        }
         _ if lower.contains("ecobee") || lower.contains("nest") => "Thermostat",
         _ if lower.contains("signify") || lower.contains("philips lighting") => "Smart home hub",
-        _ if ["brother", "canon", "seiko epson"].iter().any(|b| lower.contains(b)) => "Printer",
+        _ if ["brother", "canon", "seiko epson"]
+            .iter()
+            .any(|b| lower.contains(b)) =>
+        {
+            "Printer"
+        }
         _ if lower.contains("ring") => "Doorbell / camera",
         _ if lower.contains("apple") => "Apple device",
         _ if lower.contains("amazon") => "Amazon device",
@@ -428,14 +498,25 @@ fn name(d: &Device) -> Option<String> {
             .iter()
             .filter_map(|s| m.services.get(*s))
             // RAOP instances are "<MAC>@<name>".
-            .map(|n| n.rsplit_once('@').map_or(n.as_str(), |(_, name)| name).to_string())
+            .map(|n| {
+                n.rsplit_once('@')
+                    .map_or(n.as_str(), |(_, name)| name)
+                    .to_string()
+            })
             .find(|n| !is_junk_name(n))
     };
-    let local = m.and_then(|m| m.hostname.clone()).filter(|h| h.ends_with(".local") && !is_junk_name(h));
+    let local = m
+        .and_then(|m| m.hostname.clone())
+        .filter(|h| h.ends_with(".local") && !is_junk_name(h));
     let cast = m.and_then(|m| m.txt.get("googlecast")?.get("fn").cloned());
-    let personal = cast.or_else(|| service(&["device-info", "airplay", "companion-link", "raop", "hap"]));
+    let personal =
+        cast.or_else(|| service(&["device-info", "airplay", "companion-link", "raop", "hap"]));
     let dns = d.hostname.as_ref().map(|h| {
-        if h.ends_with(".local") { h.clone() } else { h.split('.').next().unwrap_or(h).to_string() }
+        if h.ends_with(".local") {
+            h.clone()
+        } else {
+            h.split('.').next().unwrap_or(h).to_string()
+        }
     });
     [
         personal,
@@ -464,9 +545,16 @@ fn is_junk_name(n: &str) -> bool {
 
 fn kasa_model(s: &str) -> Option<String> {
     let s = s.to_ascii_uppercase();
-    let prefix = ["KP", "HS", "EP", "KL", "LB", "KS"].into_iter().find(|p| s.starts_with(p))?;
-    let digits: String = s[prefix.len()..].chars().take_while(char::is_ascii_digit).collect();
-    (2..=3).contains(&digits.len()).then(|| format!("{prefix}{digits}"))
+    let prefix = ["KP", "HS", "EP", "KL", "LB", "KS"]
+        .into_iter()
+        .find(|p| s.starts_with(p))?;
+    let digits: String = s[prefix.len()..]
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .collect();
+    (2..=3)
+        .contains(&digits.len())
+        .then(|| format!("{prefix}{digits}"))
 }
 
 fn brand(instance: &str) -> Option<&'static str> {
@@ -515,9 +603,23 @@ fn homekit_category(ci: u32) -> &'static str {
 }
 
 fn is_apple_id(id: &str) -> bool {
-    ["iPhone", "iPad", "iPod", "AppleTV", "AudioAccessory", "Mac", "iMac", "Watch"]
-        .iter()
-        .any(|p| id.starts_with(p) && id[p.len()..].starts_with(|c: char| c.is_ascii_digit() || c == 'B' || c == 'P' || c == 'm' || c == 'A'))
+    [
+        "iPhone",
+        "iPad",
+        "iPod",
+        "AppleTV",
+        "AudioAccessory",
+        "Mac",
+        "iMac",
+        "Watch",
+    ]
+    .iter()
+    .any(|p| {
+        id.starts_with(p)
+            && id[p.len()..].starts_with(|c: char| {
+                c.is_ascii_digit() || c == 'B' || c == 'P' || c == 'm' || c == 'A'
+            })
+    })
 }
 
 /// Apple hardware identifier → (type, marketing name).
@@ -536,7 +638,9 @@ fn apple_model(id: &str) -> Id {
         "Mac14,12" => Some(named("Computer", "Mac mini (M2 Pro)")),
         "Mac14,13" | "Mac14,14" => Some(named("Computer", "Mac Studio (M2)")),
         "Mac14,2" | "Mac14,15" => Some(named("Computer", "MacBook Air (M2)")),
-        "Mac14,5" | "Mac14,6" | "Mac14,7" | "Mac14,9" | "Mac14,10" => Some(named("Computer", "MacBook Pro (M2)")),
+        "Mac14,5" | "Mac14,6" | "Mac14,7" | "Mac14,9" | "Mac14,10" => {
+            Some(named("Computer", "MacBook Pro (M2)"))
+        }
         "Mac14,8" => Some(named("Computer", "Mac Pro (M2)")),
         "Mac15,3" | "Mac15,6" | "Mac15,7" | "Mac15,8" | "Mac15,9" | "Mac15,10" | "Mac15,11" => {
             Some(named("Computer", "MacBook Pro (M3)"))
@@ -544,7 +648,9 @@ fn apple_model(id: &str) -> Id {
         "Mac15,4" | "Mac15,5" => Some(named("Computer", "iMac (M3)")),
         "Mac15,12" | "Mac15,13" => Some(named("Computer", "MacBook Air (M3)")),
         "Mac15,14" => Some(named("Computer", "Mac Studio (M3 Ultra)")),
-        "Mac16,1" | "Mac16,5" | "Mac16,6" | "Mac16,7" | "Mac16,8" => Some(named("Computer", "MacBook Pro (M4)")),
+        "Mac16,1" | "Mac16,5" | "Mac16,6" | "Mac16,7" | "Mac16,8" => {
+            Some(named("Computer", "MacBook Pro (M4)"))
+        }
         "Mac16,2" | "Mac16,3" => Some(named("Computer", "iMac (M4)")),
         "Mac16,9" => Some(named("Computer", "Mac Studio (M4 Max)")),
         "Mac16,10" => Some(named("Computer", "Mac mini (M4)")),
@@ -583,7 +689,10 @@ mod tests {
 
     #[test]
     fn apple_models() {
-        assert_eq!(apple_model("AppleTV14,1").1.as_deref(), Some("Apple TV 4K (3rd gen)"));
+        assert_eq!(
+            apple_model("AppleTV14,1").1.as_deref(),
+            Some("Apple TV 4K (3rd gen)")
+        );
         assert_eq!(apple_model("AudioAccessory5,1").0, "Speaker");
         assert_eq!(apple_model("iPhone15,2").1.as_deref(), Some("iPhone"));
         assert_eq!(apple_model("Mac99,1").1.as_deref(), Some("Mac"));
@@ -612,19 +721,37 @@ mod tests {
     #[test]
     fn vendor_beats_generic_ports() {
         // A Ubiquiti switch with SSH open is network gear, not a computer.
-        assert_eq!(identify(&device(&[22], Some("Ubiquiti"))).map(|id| id.0), Some("Network gear"));
-        assert_eq!(identify(&device(&[22], None)).map(|id| id.0), Some("SSH device"));
+        assert_eq!(
+            identify(&device(&[22], Some("Ubiquiti"))).map(|id| id.0),
+            Some("Network gear")
+        );
+        assert_eq!(
+            identify(&device(&[22], None)).map(|id| id.0),
+            Some("SSH device")
+        );
         // Specific ports still beat the vendor: an Apple MAC with only the sync port is a phone.
-        assert_eq!(identify(&device(&[62078], Some("Apple"))).map(|id| id.0), Some("Phone / tablet"));
+        assert_eq!(
+            identify(&device(&[62078], Some("Apple"))).map(|id| id.0),
+            Some("Phone / tablet")
+        );
     }
 
     #[test]
     fn homelab_ports() {
         let id = |ports: &[u16]| identify(&device(ports, None));
         assert_eq!(id(&[22, 8006]), Some(("Server", Some("Proxmox VE".into()))));
-        assert_eq!(id(&[8123]), Some(("Home automation", Some("Home Assistant".into()))));
-        assert_eq!(id(&[22, 32400]), Some(("Media server", Some("Plex".into()))));
-        assert_eq!(id(&[135, 445, 3389]), Some(("Computer", Some("Windows PC".into()))));
+        assert_eq!(
+            id(&[8123]),
+            Some(("Home automation", Some("Home Assistant".into())))
+        );
+        assert_eq!(
+            id(&[22, 32400]),
+            Some(("Media server", Some("Plex".into())))
+        );
+        assert_eq!(
+            id(&[135, 445, 3389]),
+            Some(("Computer", Some("Windows PC".into())))
+        );
         // A database makes a box a server, even one sharing files over SMB.
         assert_eq!(id(&[22, 445, 5432]).map(|id| id.0), Some("Server"));
         assert_eq!(id(&[53]).map(|id| id.0), Some("DNS server"));
@@ -635,12 +762,18 @@ mod tests {
 
     #[test]
     fn xiaomi_names() {
-        assert_eq!(xiaomi("zhimi-fan-za5_mibta3f0"), Some(("Fan", Some("Smartmi zhimi.fan.za5".into()))));
+        assert_eq!(
+            xiaomi("zhimi-fan-za5_mibta3f0"),
+            Some(("Fan", Some("Smartmi zhimi.fan.za5".into())))
+        );
         assert_eq!(
             xiaomi("roborock-vacuum-s5_miio12345678"),
             Some(("Robot vacuum", Some("Roborock roborock.vacuum.s5".into())))
         );
-        assert_eq!(xiaomi("yeelink-light-color1_miio1"), Some(("Smart light", Some("Yeelight yeelink.light.color1".into()))));
+        assert_eq!(
+            xiaomi("yeelink-light-color1_miio1"),
+            Some(("Smart light", Some("Yeelight yeelink.light.color1".into())))
+        );
         assert_eq!(xiaomi("zhimi-fan-za5"), None);
         assert_eq!(xiaomi("my_laptop"), None);
     }

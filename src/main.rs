@@ -110,7 +110,10 @@ fn main() -> ExitCode {
     match run(&args) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
-            eprintln!("{} {e}", "error:".if_supports_color(Stderr, |t| t.red().bold().to_string()));
+            eprintln!(
+                "{} {e}",
+                "error:".if_supports_color(Stderr, |t| t.red().bold().to_string())
+            );
             ExitCode::FAILURE
         }
     }
@@ -127,8 +130,14 @@ fn run(args: &Args) -> Result<(), String> {
     let (scan, show_services) = if interactive {
         tui::run(|| scan(args), args.services)?
     } else if std::io::stderr().is_terminal() {
-        let dim = |s: String| s.if_supports_color(Stderr, |t| t.dimmed().to_string()).to_string();
-        let result = animate(|| scan(args), |ping| eprint!("\r{}", dim(format!("{ping}  Scanning the network…"))));
+        let dim = |s: String| {
+            s.if_supports_color(Stderr, |t| t.dimmed().to_string())
+                .to_string()
+        };
+        let result = animate(
+            || scan(args),
+            |ping| eprint!("\r{}", dim(format!("{ping}  Scanning the network…"))),
+        );
         eprint!("\r\x1b[2K");
         (result?, args.services)
     } else {
@@ -137,7 +146,10 @@ fn run(args: &Args) -> Result<(), String> {
     let json = if !args.json {
         None
     } else if show_services {
-        let rows: Vec<_> = services::list(&scan.devices).iter().map(|s| services::Json::new(s, &scan.devices)).collect();
+        let rows: Vec<_> = services::list(&scan.devices)
+            .iter()
+            .map(|s| services::Json::new(s, &scan.devices))
+            .collect();
         Some(serde_json::to_string_pretty(&rows))
     } else {
         Some(serde_json::to_string_pretty(&scan.devices))
@@ -152,7 +164,10 @@ fn run(args: &Args) -> Result<(), String> {
     } else {
         print_table(&scan.devices, args.verbose);
     }
-    let dim = |s: &str| s.if_supports_color(Stderr, |t| t.dimmed().to_string()).to_string();
+    let dim = |s: &str| {
+        s.if_supports_color(Stderr, |t| t.dimmed().to_string())
+            .to_string()
+    };
     eprintln!("\n{}", dim(&scan.summary));
     for note in &scan.notes {
         eprintln!("{}", dim(note));
@@ -161,7 +176,15 @@ fn run(args: &Args) -> Result<(), String> {
 }
 
 /// A sonar ping: ripples leave the dot and fade out.
-const PING: &[&str] = &["●      ", "● )    ", "● ) )  ", "● ) ) )", "●   ) )", "●     )", "●      "];
+const PING: &[&str] = &[
+    "●      ",
+    "● )    ",
+    "● ) )  ",
+    "● ) ) )",
+    "●   ) )",
+    "●     )",
+    "●      ",
+];
 
 /// Run `work` on another thread, calling `frame` with each frame of the
 /// ping animation until it's done.
@@ -221,7 +244,12 @@ fn scan(args: &Args) -> Result<Scan, String> {
                 ssdp::discover(ifc.ip, ifc.net, wait, grace),
             )
         });
-        (arp.join().expect("arp thread"), pinged.join().expect("ping thread"), names.join().expect("dns thread"), rest)
+        (
+            arp.join().expect("arp thread"),
+            pinged.join().expect("ping thread"),
+            names.join().expect("dns thread"),
+            rest,
+        )
     });
     let (arp_found, privileged) = match arp_result {
         Ok(found) => (found, true),
@@ -277,12 +305,19 @@ fn scan(args: &Args) -> Result<Scan, String> {
         for (ip, needs_ports) in follow_up {
             set.spawn(async move {
                 let (ports, web_wait) = if needs_ports {
-                    (Some(probe::all_ports(ip, probe::AWAKE_WAIT).await), grace - probe::AWAKE_WAIT)
+                    (
+                        Some(probe::all_ports(ip, probe::AWAKE_WAIT).await),
+                        grace - probe::AWAKE_WAIT,
+                    )
                 } else {
                     (None, grace)
                 };
                 let web = ports.as_ref().is_none_or(|p| p.contains(&80));
-                let banner = if web { http::banner(ip, 80, web_wait).await } else { None };
+                let banner = if web {
+                    http::banner(ip, 80, web_wait).await
+                } else {
+                    None
+                };
                 (ip, ports, banner)
             });
         }
@@ -322,7 +357,11 @@ fn scan(args: &Args) -> Result<Scan, String> {
     if !privileged && !have_macs {
         notes.push("tip: run with sudo to see MAC addresses and vendors, and find devices that ignore pings".into());
     }
-    Ok(Scan { devices, summary, notes })
+    Ok(Scan {
+        devices,
+        summary,
+        notes,
+    })
 }
 
 /// Reverse lookups (which on macOS also ask mDNS for `.local` names), in
@@ -356,8 +395,16 @@ fn hostnames(ips: Vec<Ipv4Addr>, deadline: Duration) -> HashMap<Ipv4Addr, String
 
 /// Infrastructure services that say nothing about what a device is.
 const NOISY_SERVICES: &[&str] = &[
-    "sleep-proxy", "trel", "srpl-tls", "meshcop", "ieee1588", "nrd", "infra-analytics",
-    "dnssd-server", "device-info", "companion-link",
+    "sleep-proxy",
+    "trel",
+    "srpl-tls",
+    "meshcop",
+    "ieee1588",
+    "nrd",
+    "infra-analytics",
+    "dnssd-server",
+    "device-info",
+    "companion-link",
 ];
 
 /// One table cell before rendering. Empty cells are drawn as a dimmed row
@@ -371,8 +418,12 @@ struct Field {
 
 impl Field {
     fn new(text: Option<&str>) -> Self {
-        let text = text.filter(|t| !t.is_empty()).map(String::from);
-        Field { text, color: None, bold: false }
+        let text = text.map(printable).filter(|t| !t.is_empty());
+        Field {
+            text,
+            color: None,
+            bold: false,
+        }
     }
 
     fn fg(mut self, color: Color) -> Self {
@@ -420,7 +471,10 @@ fn print_table(devices: &[Device], verbose: bool) {
         header.extend(["HOSTNAME", "PORTS", "SERVICES"]);
     }
 
-    print_fields(&header, devices.iter().map(|d| row(d, show_mac, verbose)).collect());
+    print_fields(
+        &header,
+        devices.iter().map(|d| row(d, show_mac, verbose)).collect(),
+    );
 }
 
 fn print_services(devices: &[Device]) {
@@ -433,7 +487,11 @@ fn print_services(devices: &[Device]) {
                 (None, Some(h), _) => Field::new(Some(h)),
                 (None, None, v) => Field::new(v),
             };
-            vec![Field::new(Some(&s.address())).fg(Color::Green), Field::new(s.name), host]
+            vec![
+                Field::new(Some(&s.address())).fg(Color::Green),
+                Field::new(s.name),
+                host,
+            ]
         })
         .collect();
     print_fields(&["ADDRESS", "SERVICE", "HOST"], rows);
@@ -441,18 +499,40 @@ fn print_services(devices: &[Device]) {
 
 fn print_fields(header: &[&str], rows: Vec<Vec<Field>>) {
     let widths: Vec<usize> = (0..header.len())
-        .map(|i| rows.iter().map(|r| r[i].width()).chain([header[i].len()]).max().unwrap_or(0))
+        .map(|i| {
+            rows.iter()
+                .map(|r| r[i].width())
+                .chain([header[i].len()])
+                .max()
+                .unwrap_or(0)
+        })
         .collect();
 
     let mut table = Table::new();
     table
         .load_style(presets::NOTHING)
         .set_content_arrangement(ContentArrangement::Dynamic)
-        .set_header(header.iter().map(|h| Cell::new(h).add_attribute(Attribute::Bold)));
+        .set_header(
+            header
+                .iter()
+                .map(|h| Cell::new(h).add_attribute(Attribute::Bold)),
+        );
     for r in rows {
         table.add_row(r.into_iter().zip(&widths).map(|(f, &w)| f.render(w)));
     }
     println!("{table}");
+}
+
+/// `s` with terminal control characters removed. Names and models come from
+/// the network, and an ESC or BEL in one could otherwise drive the terminal
+/// (set the title, write the clipboard, hide rows). Bidi overrides go too, so a
+/// name can't visually reorder the rest of its row.
+fn printable(s: &str) -> String {
+    s.chars()
+        .filter(|&c| {
+            !c.is_control() && !matches!(c, '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
+        })
+        .collect()
 }
 
 /// The TYPE column, marking this machine and the gateway.
@@ -492,7 +572,12 @@ fn row(d: &Device, show_mac: bool, verbose: bool) -> Vec<Field> {
         row.push(Field::new(d.mac.as_deref()).fg(Color::DarkGrey));
     }
     if verbose {
-        let ports = d.open_ports.iter().map(u16::to_string).collect::<Vec<_>>().join(",");
+        let ports = d
+            .open_ports
+            .iter()
+            .map(u16::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
         let services = d
             .mdns
             .as_ref()
@@ -525,12 +610,26 @@ mod tests {
     }
 
     #[test]
+    fn strips_terminal_controls() {
+        assert_eq!(
+            printable("TV\x1b]52;c;aGk=\x07\u{9b}2J\u{202e}"),
+            "TV]52;c;aGk=2J"
+        );
+        assert_eq!(printable("Living Room"), "Living Room");
+        assert_eq!(Field::new(Some("\x1b\x07")).text, None);
+    }
+
+    #[test]
     fn vendor_backfills_missing_name() {
         let r = row(&device(None, Some("Raspberry Pi")), true, false);
         assert_eq!(r[1].text.as_deref(), Some("Raspberry Pi"));
         assert!(!r[1].bold);
 
-        let r = row(&device(Some("octopi.local"), Some("Raspberry Pi")), true, false);
+        let r = row(
+            &device(Some("octopi.local"), Some("Raspberry Pi")),
+            true,
+            false,
+        );
         assert_eq!(r[1].text.as_deref(), Some("octopi.local"));
         assert!(r[1].bold);
     }

@@ -8,7 +8,8 @@ use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
-    Block, Cell, Clear, Padding, Paragraph, Row, Scrollbar, ScrollbarOrientation, ScrollbarState, Table, TableState, Wrap,
+    Block, Cell, Clear, Padding, Paragraph, Row, Scrollbar, ScrollbarOrientation, ScrollbarState,
+    Table, TableState, Wrap,
 };
 use ratatui::{DefaultTerminal, Frame};
 use std::io::Write;
@@ -40,10 +41,15 @@ const KEYS: &[(&str, &str)] = &[
 
 /// Browse until the user quits, returning the latest scan and whether the
 /// services view was showing.
-pub fn run(scan: impl Fn() -> Result<Scan, String> + Sync, show_services: bool) -> Result<(Scan, bool), String> {
+pub fn run(
+    scan: impl Fn() -> Result<Scan, String> + Sync,
+    show_services: bool,
+) -> Result<(Scan, bool), String> {
     let mut terminal = ratatui::init();
-    let result = App::start(&mut terminal, &scan, show_services)
-        .and_then(|mut app| app.run(&mut terminal, &scan).map(|()| (app.scan, app.show_services)));
+    let result = App::start(&mut terminal, &scan, show_services).and_then(|mut app| {
+        app.run(&mut terminal, &scan)
+            .map(|()| (app.scan, app.show_services))
+    });
     ratatui::restore();
     result
 }
@@ -90,9 +96,17 @@ impl App {
         Ok(app)
     }
 
-    fn run(&mut self, terminal: &mut DefaultTerminal, scan: &(impl Fn() -> Result<Scan, String> + Sync)) -> Result<(), String> {
+    fn run(
+        &mut self,
+        terminal: &mut DefaultTerminal,
+        scan: &(impl Fn() -> Result<Scan, String> + Sync),
+    ) -> Result<(), String> {
         loop {
-            if self.flash.as_ref().is_some_and(|(_, at)| at.elapsed() > FLASH) {
+            if self
+                .flash
+                .as_ref()
+                .is_some_and(|(_, at)| at.elapsed() > FLASH)
+            {
                 self.flash = None;
             }
             terminal.draw(|f| self.draw(f)).map_err(|e| e.to_string())?;
@@ -110,7 +124,8 @@ impl App {
                 // Any key closes the help, except that the quit keys still quit.
                 self.show_help = false;
                 if key.code == KeyCode::Char('q')
-                    || (key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL))
+                    || (key.code == KeyCode::Char('c')
+                        && key.modifiers.contains(KeyModifiers::CONTROL))
                 {
                     return Ok(());
                 }
@@ -129,8 +144,12 @@ impl App {
                     self.refilter(self.selected_key());
                 }
                 KeyCode::Esc => return Ok(()),
-                KeyCode::Down | KeyCode::Char('j') => self.select(self.table.selected().map_or(0, |i| i + 1)),
-                KeyCode::Up | KeyCode::Char('k') => self.select(self.table.selected().map_or(0, |i| i.saturating_sub(1))),
+                KeyCode::Down | KeyCode::Char('j') => {
+                    self.select(self.table.selected().map_or(0, |i| i + 1))
+                }
+                KeyCode::Up | KeyCode::Char('k') => {
+                    self.select(self.table.selected().map_or(0, |i| i.saturating_sub(1)))
+                }
                 KeyCode::Home | KeyCode::Char('g') => self.select(0),
                 KeyCode::End | KeyCode::Char('G') => self.select(usize::MAX),
                 KeyCode::PageDown | KeyCode::Char('d') if key.code == KeyCode::PageDown || ctrl => {
@@ -163,7 +182,9 @@ impl App {
                             self.refilter(keep);
                             self.flash = None;
                         }
-                        Err(e) => self.flash = Some((format!("Rescan failed: {e}"), Instant::now())),
+                        Err(e) => {
+                            self.flash = Some((format!("Rescan failed: {e}"), Instant::now()))
+                        }
                     }
                 }
                 _ => {}
@@ -202,7 +223,10 @@ impl App {
     }
 
     fn selected_key(&self) -> Option<(Ipv4Addr, Option<u16>)> {
-        self.table.selected().filter(|&r| r < self.visible.len()).map(|r| self.row_key(r))
+        self.table
+            .selected()
+            .filter(|&r| r < self.visible.len())
+            .map(|r| self.row_key(r))
     }
 
     fn selected_service(&self) -> Option<&Service> {
@@ -212,7 +236,11 @@ impl App {
 
     fn selected(&self) -> Option<&Device> {
         let i = *self.visible.get(self.table.selected()?)?;
-        Some(if self.show_services { &self.scan.devices[self.services[i].device] } else { &self.scan.devices[i] })
+        Some(if self.show_services {
+            &self.scan.devices[self.services[i].device]
+        } else {
+            &self.scan.devices[i]
+        })
     }
 
     fn selected_ip(&self) -> Option<Ipv4Addr> {
@@ -223,16 +251,23 @@ impl App {
     /// still shows; otherwise the first row for the same device does.
     fn refilter(&mut self, keep: Option<(Ipv4Addr, Option<u16>)>) {
         let needle = self.filter.to_lowercase();
-        let matches = |d: &Device, extra: String| needle.is_empty() || (haystack(d) + &extra).contains(&needle);
+        let matches = |d: &Device, extra: String| {
+            needle.is_empty() || (haystack(d) + &extra).contains(&needle)
+        };
         self.visible = if self.show_services {
             (0..self.services.len())
                 .filter(|&i| {
                     let s = &self.services[i];
-                    matches(&self.scan.devices[s.device], format!("\n{}\n{}", s.address(), s.name.unwrap_or("")).to_lowercase())
+                    matches(
+                        &self.scan.devices[s.device],
+                        format!("\n{}\n{}", s.address(), s.name.unwrap_or("")).to_lowercase(),
+                    )
                 })
                 .collect()
         } else {
-            (0..self.scan.devices.len()).filter(|&i| matches(&self.scan.devices[i], String::new())).collect()
+            (0..self.scan.devices.len())
+                .filter(|&i| matches(&self.scan.devices[i], String::new()))
+                .collect()
         };
         let rows = 0..self.visible.len();
         let pos = keep.and_then(|key| {
@@ -241,7 +276,11 @@ impl App {
                 .or_else(|| rows.clone().find(|&r| self.row_key(r).0 == key.0))
         });
         let before = self.selected_ip();
-        self.table.select(if self.visible.is_empty() { None } else { Some(pos.unwrap_or(0)) });
+        self.table.select(if self.visible.is_empty() {
+            None
+        } else {
+            Some(pos.unwrap_or(0))
+        });
         if self.selected_ip() != before {
             self.detail_scroll = 0;
         }
@@ -277,27 +316,43 @@ impl App {
         let Some(d) = self.selected() else { return };
         let title = d.name.clone().unwrap_or_else(|| d.ip.to_string());
         copy_to_clipboard(&details_text(d));
-        self.flash = Some((format!("Copied the details for {title} to the clipboard"), Instant::now()));
+        self.flash = Some((
+            format!("Copied the details for {title} to the clipboard"),
+            Instant::now(),
+        ));
     }
 
     fn draw(&mut self, f: &mut Frame) {
         let notes = self.scan.notes.len() as u16;
-        let [header, body, footer] =
-            Layout::vertical([Constraint::Length(1 + notes), Constraint::Fill(1), Constraint::Length(1)]).areas(f.area());
+        let [header, body, footer] = Layout::vertical([
+            Constraint::Length(1 + notes),
+            Constraint::Fill(1),
+            Constraint::Length(1),
+        ])
+        .areas(f.area());
 
         let mut head = vec![Line::from(vec![
             " lsnet ".bold(),
             Span::raw(" "),
             Span::raw(self.scan.summary.clone()).dim(),
         ])];
-        head.extend(self.scan.notes.iter().map(|n| Line::from(format!(" {n}")).dim()));
+        head.extend(
+            self.scan
+                .notes
+                .iter()
+                .map(|n| Line::from(format!(" {n}")).dim()),
+        );
         f.render_widget(Paragraph::new(head), header);
 
         let [list, detail] = if body.width >= SIDE_BY_SIDE {
             // As wide as the list needs, up to 60%; details get the rest.
             let (first, name, last) = self.column_widths();
             let list = 2 + 2 + first + 1 + name + 1 + last;
-            Layout::horizontal([Constraint::Length(list.min(body.width * 6 / 10)), Constraint::Fill(1)]).areas(body)
+            Layout::horizontal([
+                Constraint::Length(list.min(body.width * 6 / 10)),
+                Constraint::Fill(1),
+            ])
+            .areas(body)
         } else {
             Layout::vertical([Constraint::Percentage(50), Constraint::Percentage(50)]).areas(body)
         };
@@ -325,14 +380,22 @@ impl App {
             let s = &self.services;
             (
                 widest("ADDRESS", &mut s.iter().map(|s| s.address().len())),
-                widest("HOST", &mut s.iter().map(|s| list_name(&devices[s.device]).width())),
+                widest(
+                    "HOST",
+                    &mut s.iter().map(|s| list_name(&devices[s.device]).width()),
+                ),
                 widest("SERVICE", &mut s.iter().map(|s| s.name.map_or(0, str::len))),
             )
         } else {
             (
                 15,
                 widest("NAME", &mut devices.iter().map(|d| list_name(d).width())),
-                widest("TYPE", &mut devices.iter().map(|d| kind_label(d).map_or(0, |k| k.chars().count()))),
+                widest(
+                    "TYPE",
+                    &mut devices
+                        .iter()
+                        .map(|d| kind_label(d).map_or(0, |k| k.chars().count())),
+                ),
             )
         }
     }
@@ -355,7 +418,11 @@ impl App {
                 Cell::from(list_name(&self.scan.devices[s.device])),
             ])
         });
-        let widths = [Constraint::Length(address_width), Constraint::Length(service_width), Constraint::Fill(1)];
+        let widths = [
+            Constraint::Length(address_width),
+            Constraint::Length(service_width),
+            Constraint::Fill(1),
+        ];
         let table = Table::new(rows, widths)
             .header(Row::new(["ADDRESS", "SERVICE", "HOST"]).bold())
             .block(Block::bordered().title(self.list_title("Services", self.services.len())))
@@ -380,11 +447,18 @@ impl App {
                 Cell::from(kind_label(d).unwrap_or_default()).style(kind_style),
             ])
         });
-        let table = Table::new(rows, [Constraint::Length(15), Constraint::Fill(1), Constraint::Length(type_width)])
-            .header(Row::new(["IP", "NAME", "TYPE"]).bold())
-            .block(Block::bordered().title(self.list_title("Devices", self.scan.devices.len())))
-            .row_highlight_style(Style::new().add_modifier(Modifier::REVERSED))
-            .highlight_symbol("› ");
+        let table = Table::new(
+            rows,
+            [
+                Constraint::Length(15),
+                Constraint::Fill(1),
+                Constraint::Length(type_width),
+            ],
+        )
+        .header(Row::new(["IP", "NAME", "TYPE"]).bold())
+        .block(Block::bordered().title(self.list_title("Devices", self.scan.devices.len())))
+        .row_highlight_style(Style::new().add_modifier(Modifier::REVERSED))
+        .highlight_symbol("› ");
         f.render_stateful_widget(table, area, &mut self.table);
     }
 
@@ -400,33 +474,55 @@ impl App {
             return;
         };
         let title = d.name.clone().unwrap_or_else(|| d.ip.to_string());
-        let block = Block::bordered().title(format!(" {title} ").bold()).padding(Padding::horizontal(1));
+        let block = Block::bordered()
+            .title(format!(" {title} ").bold())
+            .padding(Padding::horizontal(1));
         let inner = block.inner(area);
         let para = Paragraph::new(details(d, inner.width)).wrap(Wrap { trim: false });
         self.detail_lines = para.line_count(inner.width) as u16;
         self.detail_height = inner.height;
         self.scroll_detail(0);
-        f.render_widget(
-            para.scroll((self.detail_scroll, 0)).block(block),
-            area,
-        );
+        f.render_widget(para.scroll((self.detail_scroll, 0)).block(block), area);
         if self.detail_lines > self.detail_height {
-            let mut state = ScrollbarState::new(self.detail_lines.saturating_sub(self.detail_height) as usize)
-                .position(self.detail_scroll as usize);
-            f.render_stateful_widget(Scrollbar::new(ScrollbarOrientation::VerticalRight), area, &mut state);
+            let mut state =
+                ScrollbarState::new(self.detail_lines.saturating_sub(self.detail_height) as usize)
+                    .position(self.detail_scroll as usize);
+            f.render_stateful_widget(
+                Scrollbar::new(ScrollbarOrientation::VerticalRight),
+                area,
+                &mut state,
+            );
         }
     }
 
     fn draw_footer(&self, f: &mut Frame, area: Rect) {
         let line = if self.typing_filter {
-            Line::from(vec![" /".bold(), Span::raw(self.filter.clone()), "▏".slow_blink()])
+            Line::from(vec![
+                " /".bold(),
+                Span::raw(self.filter.clone()),
+                "▏".slow_blink(),
+            ])
         } else if let Some((msg, _)) = &self.flash {
             Line::from(format!(" {msg}")).green()
         } else {
             let mut keys = vec![
                 ("↑↓", "move"),
-                ("tab", if self.show_services { "devices" } else { "services" }),
-                ("⏎", if self.show_services { "copy address" } else { "copy IP" }),
+                (
+                    "tab",
+                    if self.show_services {
+                        "devices"
+                    } else {
+                        "services"
+                    },
+                ),
+                (
+                    "⏎",
+                    if self.show_services {
+                        "copy address"
+                    } else {
+                        "copy IP"
+                    },
+                ),
                 ("c", "copy details"),
                 ("/", "filter"),
                 ("r", "rescan"),
@@ -448,7 +544,11 @@ impl App {
 }
 
 fn draw_help(f: &mut Frame, area: Rect) {
-    let key_width = KEYS.iter().map(|(k, _)| k.chars().count()).max().unwrap_or(0);
+    let key_width = KEYS
+        .iter()
+        .map(|(k, _)| k.chars().count())
+        .max()
+        .unwrap_or(0);
     let mut lines: Vec<Line> = KEYS
         .iter()
         .map(|(k, what)| Line::from(vec![format!("{k:<key_width$}   ").bold(), Span::raw(*what)]))
@@ -464,7 +564,9 @@ fn draw_help(f: &mut Frame, area: Rect) {
         height: height.min(area.height),
     };
     f.render_widget(Clear, popup);
-    let block = Block::bordered().title(" Keys ".bold()).padding(Padding::horizontal(1));
+    let block = Block::bordered()
+        .title(" Keys ".bold())
+        .padding(Padding::horizontal(1));
     f.render_widget(Paragraph::new(lines).block(block), popup);
 }
 
@@ -504,7 +606,12 @@ fn haystack(d: &Device) -> String {
         d.mac.clone(),
         d.hostname.clone(),
     ];
-    fields.into_iter().flatten().collect::<Vec<_>>().join("\n").to_lowercase()
+    fields
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join("\n")
+        .to_lowercase()
 }
 
 /// The details pane's lines for `d`, wrapped to `cols` with long values
@@ -519,7 +626,11 @@ fn details(d: &Device, cols: u16) -> Vec<Line<'static>> {
         for (i, part) in wrap(value, room).into_iter().enumerate() {
             let label = if i == 0 { label.clone() } else { Span::raw("") };
             let pad = " ".repeat(width + 1 - label.width().min(width));
-            out.push(Line::from(vec![label, Span::raw(pad), Span::styled(part, style)]));
+            out.push(Line::from(vec![
+                label,
+                Span::raw(pad),
+                Span::styled(part, style),
+            ]));
         }
     };
     let field = |out: &mut Vec<Line<'static>>, label: &'static str, value: Option<String>| {
@@ -527,7 +638,11 @@ fn details(d: &Device, cols: u16) -> Vec<Line<'static>> {
             row(out, label.dim(), &v, Style::new());
         }
     };
-    let heading = [kind_label(d), d.model.clone()].into_iter().flatten().collect::<Vec<_>>().join(" · ");
+    let heading = [kind_label(d), d.model.clone()]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join(" · ");
     if !heading.is_empty() {
         out.push(Line::from(heading).italic());
         out.push(Line::default());
@@ -559,14 +674,32 @@ fn details(d: &Device, cols: u16) -> Vec<Line<'static>> {
         section(&mut out, "Bonjour (mDNS)");
         field(&mut out, "Name", m.hostname.clone());
         // Services that identify the device first; generic infrastructure dimmed at the end.
-        let (noisy, useful): (Vec<_>, Vec<_>) =
-            m.services.iter().partition(|(s, _)| NOISY_SERVICES.contains(&s.as_str()));
-        for (dim, (svc, instance)) in useful.into_iter().map(|s| (false, s)).chain(noisy.into_iter().map(|s| (true, s))) {
-            let style = if dim { Style::new().dark_gray() } else { Style::new() };
-            let label = Span::styled(svc.clone(), style.fg(if dim { Color::DarkGray } else { Color::Blue }));
+        let (noisy, useful): (Vec<_>, Vec<_>) = m
+            .services
+            .iter()
+            .partition(|(s, _)| NOISY_SERVICES.contains(&s.as_str()));
+        for (dim, (svc, instance)) in useful
+            .into_iter()
+            .map(|s| (false, s))
+            .chain(noisy.into_iter().map(|s| (true, s)))
+        {
+            let style = if dim {
+                Style::new().dark_gray()
+            } else {
+                Style::new()
+            };
+            let label = Span::styled(
+                svc.clone(),
+                style.fg(if dim { Color::DarkGray } else { Color::Blue }),
+            );
             row(&mut out, label, instance, style);
             for (k, v) in m.txt.get(svc).into_iter().flatten() {
-                row(&mut out, Span::raw(""), &format!("{k} = {v}"), Style::new().dark_gray());
+                row(
+                    &mut out,
+                    Span::raw(""),
+                    &format!("{k} = {v}"),
+                    Style::new().dark_gray(),
+                );
             }
         }
     }
@@ -576,7 +709,9 @@ fn details(d: &Device, cols: u16) -> Vec<Line<'static>> {
         field(&mut out, "Name", s.friendly_name.clone());
         field(&mut out, "Manufacturer", s.manufacturer.clone());
         let model = match (&s.model_name, &s.model_number) {
-            (Some(name), Some(number)) if !name.contains(number.as_str()) => Some(format!("{name} {number}")),
+            (Some(name), Some(number)) if !name.contains(number.as_str()) => {
+                Some(format!("{name} {number}"))
+            }
             (Some(name), _) => Some(name.clone()),
             (None, number) => number.clone(),
         };
@@ -606,7 +741,10 @@ fn details_text(d: &Device) -> String {
         let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
         text.trim_end().to_string()
     });
-    let mut out = std::iter::once(title).chain(lines).collect::<Vec<_>>().join("\n");
+    let mut out = std::iter::once(title)
+        .chain(lines)
+        .collect::<Vec<_>>()
+        .join("\n");
     out.push('\n');
     out
 }
@@ -633,7 +771,9 @@ fn wrap(text: &str, max: usize) -> Vec<String> {
             // A word longer than a whole line gets split, after punctuation
             // if there's some (hostnames, URNs, paths), or else anywhere.
             let fits = word.char_indices().nth(max).map_or(word.len(), |(i, _)| i);
-            let at = word[..fits].rfind(['.', ':', '/', '-', '_', '@']).map_or(fits, |i| i + 1);
+            let at = word[..fits]
+                .rfind(['.', ':', '/', '-', '_', '@'])
+                .map_or(fits, |i| i + 1);
             lines.push(word[..at].to_string());
             word = &word[at..];
         }
@@ -656,7 +796,11 @@ fn copy_to_clipboard(text: &str) {
     } else if cfg!(windows) {
         &[]
     } else {
-        &[&["wl-copy"], &["xclip", "-selection", "clipboard"], &["xsel", "--clipboard", "--input"]]
+        &[
+            &["wl-copy"],
+            &["xclip", "-selection", "clipboard"],
+            &["xsel", "--clipboard", "--input"],
+        ]
     };
     for tool in tools {
         let child = Command::new(tool[0])
@@ -666,7 +810,10 @@ fn copy_to_clipboard(text: &str) {
             .stderr(Stdio::null())
             .spawn();
         let Ok(mut child) = child else { continue };
-        let wrote = child.stdin.take().is_some_and(|mut stdin| stdin.write_all(text.as_bytes()).is_ok());
+        let wrote = child
+            .stdin
+            .take()
+            .is_some_and(|mut stdin| stdin.write_all(text.as_bytes()).is_ok());
         if wrote && child.wait().is_ok_and(|s| s.success()) {
             return;
         }
@@ -680,7 +827,10 @@ fn base64(data: &[u8]) -> String {
     const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::new();
     for chunk in data.chunks(3) {
-        let n = chunk.iter().enumerate().fold(0u32, |n, (i, &b)| n | (b as u32) << (16 - 8 * i));
+        let n = chunk
+            .iter()
+            .enumerate()
+            .fold(0u32, |n, (i, &b)| n | (b as u32) << (16 - 8 * i));
         for i in 0..4 {
             if i <= chunk.len() {
                 out.push(ALPHABET[(n >> (18 - 6 * i) & 63) as usize] as char);
@@ -698,12 +848,18 @@ mod tests {
 
     #[test]
     fn wrap_breaks_at_spaces_then_mid_word() {
-        assert_eq!(wrap("7000 AirPlay · 62078 iOS sync", 20), ["7000 AirPlay · 62078", "iOS sync"]);
-        assert_eq!(wrap("fhrouter.mynetworksettings.com", 29), ["fhrouter.mynetworksettings.", "com"]);
-        assert_eq!(wrap("urn:schemas-upnp-org:device:InternetGatewayDevice:2", 30), [
-            "urn:schemas-upnp-org:device:",
-            "InternetGatewayDevice:2"
-        ]);
+        assert_eq!(
+            wrap("7000 AirPlay · 62078 iOS sync", 20),
+            ["7000 AirPlay · 62078", "iOS sync"]
+        );
+        assert_eq!(
+            wrap("fhrouter.mynetworksettings.com", 29),
+            ["fhrouter.mynetworksettings.", "com"]
+        );
+        assert_eq!(
+            wrap("urn:schemas-upnp-org:device:InternetGatewayDevice:2", 30),
+            ["urn:schemas-upnp-org:device:", "InternetGatewayDevice:2"]
+        );
         assert_eq!(wrap("abcdefghij", 4), ["abcd", "efgh", "ij"]);
         assert_eq!(wrap("short", 20), ["short"]);
         assert_eq!(wrap("", 20), [""]);
@@ -716,11 +872,16 @@ mod tests {
         d.hostname = Some("a-very-long-hostname.mynetworksettings.example.com".into());
         let mut m = crate::mdns::MdnsInfo::default();
         m.services.insert("airplay".into(), "Home Router".into());
-        m.txt.entry("airplay".into()).or_default().insert("model".into(), "AppleTV14,1".into());
+        m.txt
+            .entry("airplay".into())
+            .or_default()
+            .insert("model".into(), "AppleTV14,1".into());
         d.mdns = Some(m);
         let text = details_text(&d);
         assert!(text.starts_with("Home Router\n"));
-        assert!(text.contains("Hostname      a-very-long-hostname.mynetworksettings.example.com\n"));
+        assert!(
+            text.contains("Hostname      a-very-long-hostname.mynetworksettings.example.com\n")
+        );
         assert!(text.contains("airplay       Home Router\n              model = AppleTV14,1\n"));
         assert!(text.lines().all(|l| l == l.trim_end()));
     }
@@ -733,4 +894,3 @@ mod tests {
         assert_eq!(base64(b"a"), "YQ==");
     }
 }
-

@@ -51,13 +51,21 @@ pub fn detect(name: Option<&str>) -> Result<Iface, String> {
             .ok_or("couldn't find an active network interface (try --interface)")?,
     };
 
-    let v4 = *iface.ips.first().ok_or_else(|| format!("{} has no IPv4 address", iface.name))?;
-    let mac = iface.mac.filter(|&m| m != MacAddr::zero() && m != HIDDEN_MAC);
+    let v4 = *iface
+        .ips
+        .first()
+        .ok_or_else(|| format!("{} has no IPv4 address", iface.name))?;
+    let mac = iface
+        .mac
+        .filter(|&m| m != MacAddr::zero() && m != HIDDEN_MAC);
 
     let full = Ipv4Network::new(v4.network(), v4.prefix()).expect("valid network");
     let (net, narrowed_from) = if v4.prefix() < MAX_PREFIX {
         let local = Ipv4Network::new(v4.ip(), 24).expect("valid prefix");
-        (Ipv4Network::new(local.network(), 24).expect("valid prefix"), Some(full))
+        (
+            Ipv4Network::new(local.network(), 24).expect("valid prefix"),
+            Some(full),
+        )
     } else {
         (full, None)
     };
@@ -89,7 +97,10 @@ fn pick(all: Vec<Adapter>, preferred: Option<Ipv4Addr>) -> Option<Adapter> {
         a.up && !a.loopback && a.mac.is_some_and(|m| m != MacAddr::zero()) && !a.ips.is_empty()
     };
     if let Some(ip) = preferred
-        && let Some(a) = all.iter().filter(usable).find(|a| a.ips.iter().any(|n| n.ip() == ip))
+        && let Some(a) = all
+            .iter()
+            .filter(usable)
+            .find(|a| a.ips.iter().any(|n| n.ip() == ip))
     {
         return Some(a.clone());
     }
