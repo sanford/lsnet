@@ -40,7 +40,10 @@ jobs:
       - uses: actions/checkout@v5
       - run: cargo test --locked --release
       - run: cargo clippy --locked --release --all-targets -- -D warnings
+      # Neither step above leaves a lsnet.exe behind; tests build their own binaries.
+      - run: cargo build --locked --release
       - uses: actions/upload-artifact@v4
         with:
           name: lsnet-windows-x64
           path: target/release/lsnet.exe
+          if-no-files-found: error
