@@ -32,10 +32,11 @@ It's meant to answer the question "what is that?" faster and more simply than [n
 
 - **Zero config.** It detects your interface, subnet and gateway on its own.
 - **Fast.** Every discovery method runs concurrently, and a /24 takes about 2 seconds.
-- **Identifies devices, not just addresses.** It combines what devices announce about themselves (Bonjour, UPnP), their naming conventions, web UI banners, open ports and MAC vendors into a type and a model.
+- **Identifies devices, not just addresses.** It combines what devices announce about themselves (Bonjour, UPnP), their naming conventions, web UI banners, open ports (including homelab staples like Proxmox, Plex and Home Assistant) and MAC vendors into a type and a model.
 - **Works without root.** On Linux you even get MAC addresses and vendors without it.
 - **macOS and Linux.**
 - **Browse or print.** In a terminal, `lsnet` opens a browser with everything known about each device. When piped, or with `-l`, it prints a table.
+- **Find your servers.** `Tab` in the browser, or `-s`, lists every service on the network (web UIs, SSH, file shares, databases, Plex, Proxmox, Home Assistant) with the address to reach it.
 - **Scriptable.** `--json` outputs every piece of evidence behind each identification.
 
 ## Install
@@ -73,6 +74,7 @@ lsnet [OPTIONS]
   -i, --interface <NAME>  Network interface to scan (default: the one your internet traffic uses)
   -l, --list              Print a table instead of opening the device browser
   -v, --verbose           Print a table that also shows hostnames, open ports and advertised services
+  -s, --services          List the services running on the network instead of devices
       --json              Print results as JSON
   -t, --timeout <MS>      How long to wait for devices to answer [default: 1200]
       --no-dns            Skip reverse DNS lookups
@@ -85,6 +87,7 @@ lsnet                  # browse the devices on your network
 lsnet -l               # just print the list
 sudo lsnet             # also show MAC addresses and vendors
 lsnet -v               # show the evidence: hostnames, ports, services
+lsnet -s -l            # print every service and its address
 lsnet -t 3000          # wait longer for sleepy Wi-Fi devices
 lsnet --json | jq '.[] | select(.type == "Printer")'
 ```
@@ -96,16 +99,35 @@ Run in a terminal, `lsnet` opens the browser shown at the top. Devices are liste
 | Key | Action |
 |---|---|
 | `↑` `↓` or `j` `k` | Move through the list |
-| `g` `G` or `Home` `End` | Jump to the first or last device |
-| `Enter` or `y` | Copy the selected IP address to the clipboard |
+| `g` `G` or `Home` `End` | Jump to the first or last row |
+| `Tab` | Switch between devices and services |
+| `Enter` or `y` | Copy the selected IP address (or, for a service, its address and port) to the clipboard |
 | `c` | Copy all the details to the clipboard as plain text |
 | `PgUp` `PgDn` or `Ctrl-u` `Ctrl-d` | Scroll the details by half a page |
 | `J` `K` | Scroll the details by one line |
-| `/` | Filter by IP, name, type, model, vendor, MAC or hostname. `Enter` keeps the filter, `Esc` clears it |
+| `/` | Filter by IP, name, type, model, vendor, MAC or hostname, and in the services view by port or service. `Enter` keeps the filter, `Esc` clears it |
 | `r` | Scan again, keeping your place |
 | `Esc` | Clear the filter, or quit if there isn't one |
 | `h` or `?` | Show all the keys |
 | `q` or `Ctrl-c` | Quit |
+
+### The services view
+
+Press `Tab` in the browser, or start it with `lsnet -s`, to list services instead of devices: one row per server, sorted by address, with the device's details beside it as usual.
+
+```
+┌ Services (23) ───────────────────────────────────────────┐
+│  ADDRESS             SERVICE         HOST                │
+│  192.168.1.14:22     SSH             diskstation         │
+│  192.168.1.14:445    SMB             diskstation         │
+│  192.168.1.14:5001   HTTPS           diskstation         │
+│› 192.168.1.14:32400  Plex            diskstation         │
+│  192.168.1.20:8123   Home Assistant  homeassistant.local │
+│  192.168.1.30:8006   Proxmox         pve                 │
+│  192.168.1.31:5432   PostgreSQL      db01                │
+```
+
+It lists the open ports `lsnet` found (all but AirPlay, Cast and iPhone sync, which are how devices talk to phones rather than servers) plus the web, SSH, file-sharing, VNC and similar services devices advertise over Bonjour, on whatever port they use. This machine's own services aren't listed, since `lsnet` doesn't probe it. `lsnet -s -l` prints the same list as a table, and `lsnet -s --json` gives `ip`, `port`, `service` and `host` for each.
 
 Selecting text with the mouse picks up both panes, so use `c` to copy the details instead. It copies every line, including any scrolled out of view, without wrapping. In narrow terminals the details appear below the list instead of beside it. Copying uses `pbcopy` on macOS and `wl-copy`, `xclip` or `xsel` on Linux. Without any of those, `lsnet` asks the terminal to do the copy, which also works over SSH in most modern terminals.
 
@@ -166,7 +188,8 @@ Empty cells are filled with dimmed dots, so even a row with little information i
 |---|---|---|
 | **ARP sweep** | Every device that has an IP address, including ones with no open ports, plus its MAC address | yes (or `CAP_NET_RAW` on Linux) |
 | **ARP cache** | MAC addresses the kernel learned during the scan | no (Linux only) |
-| **TCP probe** | Live hosts, since even a refused connection proves a device is there, and which common ports are open | no |
+| **TCP probe** | Live hosts, since even a refused connection proves a device is there. Every host that answers is then checked for common server and homelab ports (databases, Proxmox, Home Assistant, Plex, Jellyfin, RDP) | no |
+| **Ping** | Devices that ignore every TCP port but still answer ICMP echo (macOS; on Linux the ARP cache already covers them) | no |
 | **mDNS / Bonjour** | Friendly names ("Living Room") and model identifiers from TXT records (`AppleTV14,1`, Chromecast `md=`, printer `ty=`, HomeKit categories), plus each device's primary `.local` name from a reverse lookup of its address | no |
 | **SSDP / UPnP** | Manufacturer, model and name from each device's UPnP description, which is how routers, TVs and NASes usually identify themselves | no |
 | **Reverse DNS** | Hostnames from your router's DHCP leases | no |
@@ -179,7 +202,7 @@ Then it classifies each device using the most specific evidence available: what 
 Without root, `lsnet` can't send its own ARP packets. It finds devices with the TCP probe and the discovery protocols instead, and how much else you get depends on the OS:
 
 - **Linux:** almost nothing is lost. The TCP probe makes the kernel look up the MAC of every live address, and `lsnet` reads the results from `/proc/net/arp`. That gives MACs and vendors, and even finds devices with no open ports.
-- **macOS:** recent versions don't let binaries that aren't Apple-signed read the ARP table or MAC addresses. Without `sudo`, the VENDOR and MAC columns are hidden, devices are identified from what they announce, and devices that are both silent and fully firewalled are missed.
+- **macOS:** recent versions don't let binaries that aren't Apple-signed read the ARP table or MAC addresses. Without `sudo`, the VENDOR and MAC columns are hidden, devices are identified from what they announce, and devices that are silent, fully firewalled and ignore pings are missed.
 
 On Linux, you can give the binary raw-socket access once instead of using `sudo` every time:
 
@@ -202,9 +225,9 @@ In `--json`, each device includes:
 | `type`, `model` | What `lsnet` thinks the device is |
 | `hostname` | Reverse DNS name |
 | `randomized_mac` | The device uses a private, per-network MAC (typical of phones and laptops) |
-| `open_ports` | Which of the probed ports (22, 80, 443, 445, 7000, 8008, 9100, 62078) are open |
+| `open_ports` | Which of the probed ports are open. Every address is checked for 22, 80, 443, 445, 7000, 8008, 9100 and 62078, and every live device also for 21, 25, 53, 110, 111, 135, 139, 143, 993, 995, 1433, 1521, 1883, 3306, 3389, 5001, 5060, 5432, 5672, 6379, 8000, 8001, 8006, 8080, 8081, 8096, 8123, 8443, 8888, 9090, 9091, 9443, 27017 and 32400 |
 | `gateway`, `this_device` | Your router, and the machine running the scan |
-| `mdns`, `ssdp`, `http` | The raw evidence: services, TXT records, UPnP description fields, web banner |
+| `mdns`, `ssdp`, `http` | The raw evidence: Bonjour services with their TXT records and ports, UPnP description fields, web banner |
 
 ## Limitations
 
