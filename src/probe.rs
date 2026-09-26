@@ -79,7 +79,7 @@ pub async fn all_ports(ip: Ipv4Addr, wait: Duration) -> Vec<u16> {
 /// Some(true) if the port is open, Some(false) if refused (the host is
 /// there), None if we heard nothing.
 async fn check(ip: Ipv4Addr, port: u16, wait: Duration) -> (Ipv4Addr, u16, Option<bool>) {
-    let open = match timeout(wait, TcpStream::connect((ip, port))).await {
+    let open = match timeout(wait, connect(ip, port)).await {
         Ok(Ok(_)) => Some(true),
         Ok(Err(e)) if e.kind() == ErrorKind::ConnectionRefused => Some(false),
         _ => None,
@@ -87,13 +87,43 @@ async fn check(ip: Ipv4Addr, port: u16, wait: Duration) -> (Ipv4Addr, u16, Optio
     (ip, port, open)
 }
 
-/// A /24 sweep opens ~2000 sockets at once; macOS defaults to 256 descriptors.
+#[cfg(not(windows))]
+async fn connect(ip: Ipv4Addr, port: u16) -> std::io::Result<TcpStream> {
+    TcpStream::connect((ip, port)).await
+}
+
+/// Windows retries a refused connection for two seconds unless told not to.
+#[cfg(windows)]
+async fn connect(ip: Ipv4Addr, port: u16) -> std::io::Result<TcpStream> {
+    let sock = tokio::net::TcpSocket::new_v4()?;
+    crate::platform::fail_fast_on_refusal(&sock);
+    sock.connect((ip, port).into()).await
+}
+
+/// A /24 sweep opens ~2000 sockets at once; macOS defaults to 256
+/// descriptors. Windows has no such limit.
 pub fn raise_fd_limit() {
+    #[cfg(unix)]
     unsafe {
         let mut lim: libc::rlimit = std::mem::zeroed();
         if libc::getrlimit(libc::RLIMIT_NOFILE, &mut lim) == 0 {
             lim.rlim_cur = lim.rlim_max.min(10_240);
             libc::setrlimit(libc::RLIMIT_NOFILE, &lim);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn refusals_come_back_at_once() {
+        // A port that was just free, so connecting to it is refused.
+        let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        let start = std::time::Instant::now();
+        let (_, _, open) = check(Ipv4Addr::LOCALHOST, port, Duration::from_secs(5)).await;
+        assert_eq!(open, Some(false));
+        assert!(start.elapsed() < Duration::from_millis(500), "took {:?}", start.elapsed());
     }
 }

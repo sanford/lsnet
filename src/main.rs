@@ -15,7 +15,7 @@ use clap::Parser;
 use comfy_table::{Attribute, Cell, Color, ContentArrangement, Table, presets};
 use mdns::MdnsInfo;
 use owo_colors::{OwoColorize, Stream::Stderr};
-use pnet::util::MacAddr;
+use pnet_base::MacAddr;
 use serde::Serialize;
 use ssdp::SsdpInfo;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -118,10 +118,11 @@ fn main() -> ExitCode {
 
 fn run(args: &Args) -> Result<(), String> {
     // Browse in a terminal; print for pipes, files and anything asking for text.
+    // Windows terminals don't set TERM, so there only TERM=dumb says no.
     let interactive = !(args.list || args.json || args.verbose)
         && std::io::stdin().is_terminal()
         && std::io::stdout().is_terminal()
-        && std::env::var("TERM").is_ok_and(|t| t != "dumb");
+        && std::env::var("TERM").map_or(cfg!(windows), |t| t != "dumb");
     // After browsing, the table is still printed so the results stay in the scrollback.
     let (scan, show_services) = if interactive {
         tui::run(|| scan(args), args.services)?

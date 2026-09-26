@@ -647,8 +647,14 @@ fn wrap(text: &str, max: usize) -> Vec<String> {
 /// Use the platform's clipboard tool, or failing that ask the terminal to do
 /// it (OSC 52), which also works over SSH in most modern terminals.
 fn copy_to_clipboard(text: &str) {
+    #[cfg(windows)]
+    if crate::platform::set_clipboard(text) {
+        return;
+    }
     let tools: &[&[&str]] = if cfg!(target_os = "macos") {
         &[&["pbcopy"]]
+    } else if cfg!(windows) {
+        &[]
     } else {
         &[&["wl-copy"], &["xclip", "-selection", "clipboard"], &["xsel", "--clipboard", "--input"]]
     };

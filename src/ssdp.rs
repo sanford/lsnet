@@ -2,7 +2,7 @@
 //! M-SEARCH with the URL of an XML description that names their maker and model.
 
 use crate::http;
-use pnet::ipnetwork::Ipv4Network;
+use ipnetwork::Ipv4Network;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::net::{Ipv4Addr, SocketAddr};

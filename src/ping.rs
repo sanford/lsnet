@@ -8,10 +8,12 @@
 //! lists every host that would answer a ping. Worse, pings to empty addresses
 //! sit in the send buffer while ARP for them fails, stalling the sweep for
 //! seconds.
+//!
+//! Skipped on Windows too: its ARP sweep needs no privileges, so it already
+//! finds every host that would answer a ping.
 
 use std::collections::HashSet;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
-use std::os::fd::FromRawFd;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -21,7 +23,7 @@ const ECHO_REPLY: u8 = 0;
 /// Hosts among `targets` that answered an echo request.
 pub fn sweep(targets: &[Ipv4Addr], wait: Duration) -> HashSet<Ipv4Addr> {
     let mut alive = HashSet::new();
-    if cfg!(target_os = "linux") {
+    if cfg!(any(target_os = "linux", windows)) {
         return alive;
     }
     let Some(sock) = open() else { return alive };
@@ -54,9 +56,17 @@ pub fn sweep(targets: &[Ipv4Addr], wait: Duration) -> HashSet<Ipv4Addr> {
 
 /// An ICMP datagram socket, wrapped in `UdpSocket` for its safe
 /// `send_to`/`recv_from` (the port in the address is ignored).
+#[cfg(unix)]
 fn open() -> Option<UdpSocket> {
+    use std::os::fd::FromRawFd;
     let fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_DGRAM, libc::IPPROTO_ICMP) };
     (fd >= 0).then(|| unsafe { UdpSocket::from_raw_fd(fd) })
+}
+
+/// Windows has no ICMP datagram sockets.
+#[cfg(windows)]
+fn open() -> Option<UdpSocket> {
+    None
 }
 
 fn echo_request(id: u16, seq: u16) -> [u8; 16] {
