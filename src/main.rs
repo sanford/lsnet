@@ -4,8 +4,10 @@ mod http;
 mod iface;
 mod mdns;
 mod oui;
+mod ping;
 mod platform;
 mod probe;
+mod services;
 mod ssdp;
 mod tui;
 
@@ -16,7 +18,7 @@ use owo_colors::{OwoColorize, Stream::Stderr};
 use pnet::util::MacAddr;
 use serde::Serialize;
 use ssdp::SsdpInfo;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::{ErrorKind, IsTerminal};
 use std::net::{IpAddr, Ipv4Addr};
 use std::process::ExitCode;
@@ -41,6 +43,11 @@ struct Args {
     /// Print results as JSON
     #[arg(long)]
     json: bool,
+
+    /// List the services running on the network (web UIs, SSH, databases,
+    /// media servers) instead of devices
+    #[arg(short, long)]
+    services: bool,
 
     /// Show hostnames, open ports and advertised services
     #[arg(short, long)]
@@ -116,22 +123,34 @@ fn run(args: &Args) -> Result<(), String> {
         && std::io::stdout().is_terminal()
         && std::env::var("TERM").is_ok_and(|t| t != "dumb");
     // After browsing, the table is still printed so the results stay in the scrollback.
-    let scan = if interactive {
-        tui::run(|| scan(args))?
+    let (scan, show_services) = if interactive {
+        tui::run(|| scan(args), args.services)?
     } else if std::io::stderr().is_terminal() {
         let dim = |s: String| s.if_supports_color(Stderr, |t| t.dimmed().to_string()).to_string();
         let result = animate(|| scan(args), |ping| eprint!("\r{}", dim(format!("{ping}  Scanning the network…"))));
         eprint!("\r\x1b[2K");
-        result?
+        (result?, args.services)
     } else {
-        scan(args)?
+        (scan(args)?, args.services)
     };
-    if args.json {
-        println!("{}", serde_json::to_string_pretty(&scan.devices).unwrap());
+    let json = if !args.json {
+        None
+    } else if show_services {
+        let rows: Vec<_> = services::list(&scan.devices).iter().map(|s| services::Json::new(s, &scan.devices)).collect();
+        Some(serde_json::to_string_pretty(&rows))
+    } else {
+        Some(serde_json::to_string_pretty(&scan.devices))
+    };
+    if let Some(json) = json {
+        println!("{}", json.unwrap());
         return Ok(());
     }
 
-    print_table(&scan.devices, args.verbose);
+    if show_services {
+        print_services(&scan.devices);
+    } else {
+        print_table(&scan.devices, args.verbose);
+    }
     let dim = |s: &str| s.if_supports_color(Stderr, |t| t.dimmed().to_string()).to_string();
     eprintln!("\n{}", dim(&scan.summary));
     for note in &scan.notes {
@@ -181,8 +200,9 @@ fn scan(args: &Args) -> Result<Scan, String> {
 
     // Phase 1: every discovery method at once. The ARP sweep is blocking, so
     // it gets its own thread while the async probes share the runtime.
-    let (arp_result, names, (open_ports, mdns, ssdp)) = thread::scope(|s| {
+    let (arp_result, pinged, names, (open_ports, mdns, ssdp)) = thread::scope(|s| {
         let arp = s.spawn(|| arp::sweep(&ifc, &targets, wait));
+        let pinged = s.spawn(|| ping::sweep(&targets, wait));
         // Reverse DNS is slow per lookup but cheap in parallel, so start it for
         // every address now instead of waiting to learn which ones are alive.
         let names = s.spawn(|| {
@@ -200,7 +220,7 @@ fn scan(args: &Args) -> Result<Scan, String> {
                 ssdp::discover(ifc.ip, ifc.net, wait, grace),
             )
         });
-        (arp.join().expect("arp thread"), names.join().expect("dns thread"), rest)
+        (arp.join().expect("arp thread"), pinged.join().expect("ping thread"), names.join().expect("dns thread"), rest)
     });
     let (arp_found, privileged) = match arp_result {
         Ok(found) => (found, true),
@@ -217,6 +237,11 @@ fn scan(args: &Args) -> Result<Scan, String> {
     for (ip, mac) in arp_found {
         host(&mut hosts, ip).mac = Some(mac.to_string());
     }
+    for &ip in &pinged {
+        host(&mut hosts, ip);
+    }
+    // Hosts the TCP probe didn't reach get their ports checked in phase 2.
+    let port_scanned: HashSet<Ipv4Addr> = open_ports.keys().copied().collect();
     for (ip, ports) in open_ports {
         host(&mut hosts, ip).open_ports = ports;
     }
@@ -236,28 +261,46 @@ fn scan(args: &Args) -> Result<Scan, String> {
         d.this_device = ifc.own_ips.contains(&d.ip);
     }
 
-    // Phase 2: web banners, now that we know which hosts serve HTTP.
-    let web: Vec<Ipv4Addr> = devices
+    // Phase 2: ports for hosts found only some other way, then web banners
+    // for everything serving HTTP.
+    let follow_up: Vec<(Ipv4Addr, bool)> = devices
         .iter()
-        .filter(|d| d.open_ports.contains(&80) && !d.this_device)
-        .map(|d| d.ip)
+        .filter(|d| !d.this_device)
+        .filter_map(|d| {
+            let needs_ports = !port_scanned.contains(&d.ip);
+            (needs_ports || d.open_ports.contains(&80)).then_some((d.ip, needs_ports))
+        })
         .collect();
-    let banners = rt.block_on(async {
+    let followed = rt.block_on(async {
         let mut set = JoinSet::new();
-        for ip in web {
-            set.spawn(async move { (ip, http::banner(ip, 80, grace).await) });
+        for (ip, needs_ports) in follow_up {
+            set.spawn(async move {
+                let (ports, web_wait) = if needs_ports {
+                    (Some(probe::all_ports(ip, probe::AWAKE_WAIT).await), grace - probe::AWAKE_WAIT)
+                } else {
+                    (None, grace)
+                };
+                let web = ports.as_ref().is_none_or(|p| p.contains(&80));
+                let banner = if web { http::banner(ip, 80, web_wait).await } else { None };
+                (ip, ports, banner)
+            });
         }
         let mut out = HashMap::new();
         while let Some(joined) = set.join_next().await {
-            if let Ok((ip, Some(b))) = joined {
-                out.insert(ip, b);
+            if let Ok((ip, ports, banner)) = joined {
+                out.insert(ip, (ports, banner));
             }
         }
         out
     });
     for d in &mut devices {
+        if let Some((ports, banner)) = followed.get(&d.ip) {
+            if let Some(p) = ports {
+                d.open_ports = p.clone();
+            }
+            d.http = banner.clone();
+        }
         d.hostname = names.get(&d.ip).cloned();
-        d.http = banners.get(&d.ip).cloned();
         classify::classify(d);
     }
 
@@ -276,7 +319,7 @@ fn scan(args: &Args) -> Result<Scan, String> {
     // see MACs and quiet devices, so the tip only matters when it doesn't.
     let have_macs = devices.iter().any(|d| d.mac.is_some() && !d.this_device);
     if !privileged && !have_macs {
-        notes.push("tip: run with sudo to see MAC addresses and vendors, and find devices with no open ports".into());
+        notes.push("tip: run with sudo to see MAC addresses and vendors, and find devices that ignore pings".into());
     }
     Ok(Scan { devices, summary, notes })
 }
@@ -376,7 +419,26 @@ fn print_table(devices: &[Device], verbose: bool) {
         header.extend(["HOSTNAME", "PORTS", "SERVICES"]);
     }
 
-    let rows: Vec<Vec<Field>> = devices.iter().map(|d| row(d, show_mac, verbose)).collect();
+    print_fields(&header, devices.iter().map(|d| row(d, show_mac, verbose)).collect());
+}
+
+fn print_services(devices: &[Device]) {
+    let rows = services::list(devices)
+        .iter()
+        .map(|s| {
+            let d = &devices[s.device];
+            let host = match (&d.name, &d.hostname, d.vendor) {
+                (Some(n), _, _) => Field::new(Some(n)).bold(),
+                (None, Some(h), _) => Field::new(Some(h)),
+                (None, None, v) => Field::new(v),
+            };
+            vec![Field::new(Some(&s.address())).fg(Color::Green), Field::new(s.name), host]
+        })
+        .collect();
+    print_fields(&["ADDRESS", "SERVICE", "HOST"], rows);
+}
+
+fn print_fields(header: &[&str], rows: Vec<Vec<Field>>) {
     let widths: Vec<usize> = (0..header.len())
         .map(|i| rows.iter().map(|r| r[i].width()).chain([header[i].len()]).max().unwrap_or(0))
         .collect();
@@ -385,7 +447,7 @@ fn print_table(devices: &[Device], verbose: bool) {
     table
         .load_style(presets::NOTHING)
         .set_content_arrangement(ContentArrangement::Dynamic)
-        .set_header(header.into_iter().map(|h| Cell::new(h).add_attribute(Attribute::Bold)));
+        .set_header(header.iter().map(|h| Cell::new(h).add_attribute(Attribute::Bold)));
     for r in rows {
         table.add_row(r.into_iter().zip(&widths).map(|(f, &w)| f.render(w)));
     }

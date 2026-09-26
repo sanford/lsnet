@@ -1,6 +1,7 @@
-//! Interactive browser: a scrolling device list beside the full details of
-//! whichever device is selected.
+//! Interactive browser: a scrolling list of devices, or of the services they
+//! run, beside the full details of whichever device is selected.
 
+use crate::services::{self, Service, port_name};
 use crate::{Device, NOISY_SERVICES, Scan, animate, kind_label};
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -23,8 +24,9 @@ const FLASH: Duration = Duration::from_secs(2);
 /// Every key, for the help screen.
 const KEYS: &[(&str, &str)] = &[
     ("↑ ↓  j k", "Move through the list"),
-    ("g G  Home End", "First or last device"),
-    ("Enter  y", "Copy the IP address"),
+    ("g G  Home End", "First or last row"),
+    ("Tab", "Switch between devices and services"),
+    ("Enter  y", "Copy the IP address (or address:port)"),
     ("c", "Copy all the details"),
     ("PgUp PgDn", "Scroll details half a page"),
     ("Ctrl-u Ctrl-d", "Scroll details half a page"),
@@ -36,18 +38,21 @@ const KEYS: &[(&str, &str)] = &[
     ("q  Ctrl-c", "Quit"),
 ];
 
-/// Browse until the user quits, returning the latest scan.
-pub fn run(scan: impl Fn() -> Result<Scan, String> + Sync) -> Result<Scan, String> {
+/// Browse until the user quits, returning the latest scan and whether the
+/// services view was showing.
+pub fn run(scan: impl Fn() -> Result<Scan, String> + Sync, show_services: bool) -> Result<(Scan, bool), String> {
     let mut terminal = ratatui::init();
-    let result = App::start(&mut terminal, &scan)
-        .and_then(|mut app| app.run(&mut terminal, &scan).map(|()| app.scan));
+    let result = App::start(&mut terminal, &scan, show_services)
+        .and_then(|mut app| app.run(&mut terminal, &scan).map(|()| (app.scan, app.show_services)));
     ratatui::restore();
     result
 }
 
 struct App {
     scan: Scan,
-    /// Indices into `scan.devices` that match the filter.
+    services: Vec<Service>,
+    show_services: bool,
+    /// Indices into `scan.devices` (or `services`) that match the filter.
     visible: Vec<usize>,
     table: TableState,
     filter: String,
@@ -61,9 +66,15 @@ struct App {
 }
 
 impl App {
-    fn start(terminal: &mut DefaultTerminal, scan: &(impl Fn() -> Result<Scan, String> + Sync)) -> Result<App, String> {
+    fn start(
+        terminal: &mut DefaultTerminal,
+        scan: &(impl Fn() -> Result<Scan, String> + Sync),
+        show_services: bool,
+    ) -> Result<App, String> {
         let scan = animate(scan, |ping| draw_scanning(terminal, ping))?;
         let mut app = App {
+            services: services::list(&scan.devices),
+            show_services,
             scan,
             visible: Vec::new(),
             table: TableState::default(),
@@ -115,7 +126,7 @@ impl App {
                 KeyCode::Char('q') => return Ok(()),
                 KeyCode::Esc if !self.filter.is_empty() => {
                     self.filter.clear();
-                    self.refilter(self.selected_ip());
+                    self.refilter(self.selected_key());
                 }
                 KeyCode::Esc => return Ok(()),
                 KeyCode::Down | KeyCode::Char('j') => self.select(self.table.selected().map_or(0, |i| i + 1)),
@@ -133,6 +144,11 @@ impl App {
                 KeyCode::Enter | KeyCode::Char('y') => self.copy_ip(),
                 KeyCode::Char('c') if !ctrl => self.copy_details(),
                 KeyCode::Char('/') => self.typing_filter = true,
+                KeyCode::Tab | KeyCode::BackTab => {
+                    let keep = self.selected_key();
+                    self.show_services = !self.show_services;
+                    self.refilter(keep);
+                }
                 KeyCode::Char('h' | '?') => self.show_help = true,
                 KeyCode::Char('r') => {
                     let result = animate(scan, |ping| {
@@ -141,7 +157,8 @@ impl App {
                     });
                     match result {
                         Ok(s) => {
-                            let keep = self.selected_ip();
+                            let keep = self.selected_key();
+                            self.services = services::list(&s.devices);
                             self.scan = s;
                             self.refilter(keep);
                             self.flash = None;
@@ -171,24 +188,58 @@ impl App {
             KeyCode::Char(c) => self.filter.push(c),
             _ => return,
         }
-        self.refilter(self.selected_ip());
+        self.refilter(self.selected_key());
+    }
+
+    /// The device (and, in the services view, the port) on list row `row`.
+    fn row_key(&self, row: usize) -> (Ipv4Addr, Option<u16>) {
+        let i = self.visible[row];
+        if self.show_services {
+            (self.services[i].ip, Some(self.services[i].port))
+        } else {
+            (self.scan.devices[i].ip, None)
+        }
+    }
+
+    fn selected_key(&self) -> Option<(Ipv4Addr, Option<u16>)> {
+        self.table.selected().filter(|&r| r < self.visible.len()).map(|r| self.row_key(r))
+    }
+
+    fn selected_service(&self) -> Option<&Service> {
+        let i = *self.visible.get(self.table.selected()?)?;
+        self.show_services.then(|| &self.services[i])
     }
 
     fn selected(&self) -> Option<&Device> {
-        self.table.selected().and_then(|i| self.visible.get(i)).map(|&i| &self.scan.devices[i])
+        let i = *self.visible.get(self.table.selected()?)?;
+        Some(if self.show_services { &self.scan.devices[self.services[i].device] } else { &self.scan.devices[i] })
     }
 
     fn selected_ip(&self) -> Option<Ipv4Addr> {
         self.selected().map(|d| d.ip)
     }
 
-    /// Recompute which devices match the filter, keeping `keep` selected if it still shows.
-    fn refilter(&mut self, keep: Option<Ipv4Addr>) {
+    /// Recompute which rows match the filter. `keep` stays selected if it
+    /// still shows; otherwise the first row for the same device does.
+    fn refilter(&mut self, keep: Option<(Ipv4Addr, Option<u16>)>) {
         let needle = self.filter.to_lowercase();
-        self.visible = (0..self.scan.devices.len())
-            .filter(|&i| needle.is_empty() || haystack(&self.scan.devices[i]).contains(&needle))
-            .collect();
-        let pos = keep.and_then(|ip| self.visible.iter().position(|&i| self.scan.devices[i].ip == ip));
+        let matches = |d: &Device, extra: String| needle.is_empty() || (haystack(d) + &extra).contains(&needle);
+        self.visible = if self.show_services {
+            (0..self.services.len())
+                .filter(|&i| {
+                    let s = &self.services[i];
+                    matches(&self.scan.devices[s.device], format!("\n{}\n{}", s.address(), s.name.unwrap_or("")).to_lowercase())
+                })
+                .collect()
+        } else {
+            (0..self.scan.devices.len()).filter(|&i| matches(&self.scan.devices[i], String::new())).collect()
+        };
+        let rows = 0..self.visible.len();
+        let pos = keep.and_then(|key| {
+            rows.clone()
+                .find(|&r| self.row_key(r) == key)
+                .or_else(|| rows.clone().find(|&r| self.row_key(r).0 == key.0))
+        });
         let before = self.selected_ip();
         self.table.select(if self.visible.is_empty() { None } else { Some(pos.unwrap_or(0)) });
         if self.selected_ip() != before {
@@ -213,9 +264,13 @@ impl App {
     }
 
     fn copy_ip(&mut self) {
-        let Some(ip) = self.selected_ip() else { return };
-        copy_to_clipboard(&ip.to_string());
-        self.flash = Some((format!("Copied {ip} to the clipboard"), Instant::now()));
+        let text = match (self.selected_service(), self.selected_ip()) {
+            (Some(s), _) => s.address(),
+            (None, Some(ip)) => ip.to_string(),
+            (None, None) => return,
+        };
+        copy_to_clipboard(&text);
+        self.flash = Some((format!("Copied {text} to the clipboard"), Instant::now()));
     }
 
     fn copy_details(&mut self) {
@@ -240,13 +295,17 @@ impl App {
 
         let [list, detail] = if body.width >= SIDE_BY_SIDE {
             // As wide as the list needs, up to 60%; details get the rest.
-            let (name, kind) = self.column_widths();
-            let list = 2 + 2 + 15 + 1 + name + 1 + kind;
+            let (first, name, last) = self.column_widths();
+            let list = 2 + 2 + first + 1 + name + 1 + last;
             Layout::horizontal([Constraint::Length(list.min(body.width * 6 / 10)), Constraint::Fill(1)]).areas(body)
         } else {
             Layout::vertical([Constraint::Percentage(50), Constraint::Percentage(50)]).areas(body)
         };
-        self.draw_list(f, list);
+        if self.show_services {
+            self.draw_services(f, list);
+        } else {
+            self.draw_list(f, list);
+        }
         self.draw_detail(f, detail);
         self.draw_footer(f, footer);
         if self.show_help {
@@ -254,21 +313,60 @@ impl App {
         }
     }
 
-    /// Widths of the NAME and TYPE columns, measured over every device so
-    /// that filtering doesn't shift the layout.
-    fn column_widths(&self) -> (u16, u16) {
-        let widest = |header: &str, width: &dyn Fn(&Device) -> usize| {
-            self.scan.devices.iter().map(width).max().unwrap_or(0).max(header.len()) as u16
+    /// Widths of the list's three columns (IP, NAME, TYPE or ADDRESS, HOST,
+    /// SERVICE), measured over every row so that filtering doesn't shift the
+    /// layout. The services view shows SERVICE before HOST.
+    fn column_widths(&self) -> (u16, u16, u16) {
+        let widest = |header: &str, widths: &mut dyn Iterator<Item = usize>| {
+            widths.max().unwrap_or(0).max(header.len()) as u16
         };
-        (
-            widest("NAME", &|d| list_name(d).width()),
-            widest("TYPE", &|d| kind_label(d).map_or(0, |k| k.chars().count())),
-        )
+        let devices = &self.scan.devices;
+        if self.show_services {
+            let s = &self.services;
+            (
+                widest("ADDRESS", &mut s.iter().map(|s| s.address().len())),
+                widest("HOST", &mut s.iter().map(|s| list_name(&devices[s.device]).width())),
+                widest("SERVICE", &mut s.iter().map(|s| s.name.map_or(0, str::len))),
+            )
+        } else {
+            (
+                15,
+                widest("NAME", &mut devices.iter().map(|d| list_name(d).width())),
+                widest("TYPE", &mut devices.iter().map(|d| kind_label(d).map_or(0, |k| k.chars().count()))),
+            )
+        }
+    }
+
+    fn list_title(&self, what: &str, total: usize) -> String {
+        if self.filter.is_empty() {
+            format!(" {what} ({}) ", self.visible.len())
+        } else {
+            format!(" {what} ({} of {total}) ", self.visible.len())
+        }
+    }
+
+    fn draw_services(&mut self, f: &mut Frame, area: Rect) {
+        let (address_width, _, service_width) = self.column_widths();
+        let rows = self.visible.iter().map(|&i| {
+            let s = &self.services[i];
+            Row::new([
+                Cell::from(s.address()).green(),
+                Cell::from(s.name.map_or_else(|| Span::raw("·").dark_gray(), Span::raw)),
+                Cell::from(list_name(&self.scan.devices[s.device])),
+            ])
+        });
+        let widths = [Constraint::Length(address_width), Constraint::Length(service_width), Constraint::Fill(1)];
+        let table = Table::new(rows, widths)
+            .header(Row::new(["ADDRESS", "SERVICE", "HOST"]).bold())
+            .block(Block::bordered().title(self.list_title("Services", self.services.len())))
+            .row_highlight_style(Style::new().add_modifier(Modifier::REVERSED))
+            .highlight_symbol("› ");
+        f.render_stateful_widget(table, area, &mut self.table);
     }
 
     fn draw_list(&mut self, f: &mut Frame, area: Rect) {
         // TYPE gets the room it needs; NAME takes whatever is left.
-        let (_, type_width) = self.column_widths();
+        let (_, _, type_width) = self.column_widths();
         let rows = self.visible.iter().map(|&i| {
             let d = &self.scan.devices[i];
             let kind_style = match (d.this_device, d.gateway) {
@@ -282,14 +380,9 @@ impl App {
                 Cell::from(kind_label(d).unwrap_or_default()).style(kind_style),
             ])
         });
-        let title = if self.filter.is_empty() {
-            format!(" Devices ({}) ", self.visible.len())
-        } else {
-            format!(" Devices ({} of {}) ", self.visible.len(), self.scan.devices.len())
-        };
         let table = Table::new(rows, [Constraint::Length(15), Constraint::Fill(1), Constraint::Length(type_width)])
             .header(Row::new(["IP", "NAME", "TYPE"]).bold())
-            .block(Block::bordered().title(title))
+            .block(Block::bordered().title(self.list_title("Devices", self.scan.devices.len())))
             .row_highlight_style(Style::new().add_modifier(Modifier::REVERSED))
             .highlight_symbol("› ");
         f.render_stateful_widget(table, area, &mut self.table);
@@ -297,7 +390,12 @@ impl App {
 
     fn draw_detail(&mut self, f: &mut Frame, area: Rect) {
         let Some(d) = self.selected() else {
-            let empty = Paragraph::new("No devices match the filter.".dim()).block(Block::bordered());
+            let what = match (self.show_services, self.filter.is_empty()) {
+                (true, true) => "No services found.",
+                (true, false) => "No services match the filter.",
+                (false, _) => "No devices match the filter.",
+            };
+            let empty = Paragraph::new(what.dim()).block(Block::bordered());
             f.render_widget(empty, area);
             return;
         };
@@ -327,7 +425,8 @@ impl App {
         } else {
             let mut keys = vec![
                 ("↑↓", "move"),
-                ("⏎", "copy IP"),
+                ("tab", if self.show_services { "devices" } else { "services" }),
+                ("⏎", if self.show_services { "copy address" } else { "copy IP" }),
                 ("c", "copy details"),
                 ("/", "filter"),
                 ("r", "rescan"),
@@ -335,7 +434,7 @@ impl App {
                 ("q", "quit"),
             ];
             if !self.filter.is_empty() {
-                keys.insert(4, ("esc", "clear filter"));
+                keys.insert(5, ("esc", "clear filter"));
             }
             let mut spans = vec![Span::raw(" ")];
             for (k, what) in keys {
@@ -545,21 +644,6 @@ fn wrap(text: &str, max: usize) -> Vec<String> {
     lines
 }
 
-/// What the ports `probe` checks usually mean.
-fn port_name(port: u16) -> Option<&'static str> {
-    Some(match port {
-        22 => "SSH",
-        80 => "HTTP",
-        443 => "HTTPS",
-        445 => "SMB",
-        7000 => "AirPlay",
-        8008 => "Cast",
-        9100 => "printing",
-        62078 => "iOS sync",
-        _ => return None,
-    })
-}
-
 /// Use the platform's clipboard tool, or failing that ask the terminal to do
 /// it (OSC 52), which also works over SSH in most modern terminals.
 fn copy_to_clipboard(text: &str) {
@@ -624,7 +708,7 @@ mod tests {
         let mut d = Device::new(Ipv4Addr::new(192, 168, 1, 1));
         d.name = Some("Home Router".into());
         d.hostname = Some("a-very-long-hostname.mynetworksettings.example.com".into());
-        let mut m = crate::mdns::MdnsInfo { hostname: None, services: Default::default(), txt: Default::default() };
+        let mut m = crate::mdns::MdnsInfo::default();
         m.services.insert("airplay".into(), "Home Router".into());
         m.txt.entry("airplay".into()).or_default().insert("model".into(), "AppleTV14,1".into());
         d.mdns = Some(m);

@@ -340,6 +340,23 @@ fn from_ports(d: &Device) -> Option<Id> {
     if has(7000) {
         return Some(("AirPlay device", None));
     }
+    // Homelab apps that each claim a port of their own.
+    if has(8006) {
+        return Some(("Server", Some("Proxmox VE".into())));
+    }
+    if has(8123) {
+        return Some(("Home automation", Some("Home Assistant".into())));
+    }
+    if has(32400) {
+        return Some(("Media server", Some("Plex".into())));
+    }
+    if has(8096) {
+        return Some(("Media server", Some("Jellyfin / Emby".into())));
+    }
+    // Samba doesn't listen on the RPC endpoint mapper; Windows always does.
+    if has(135) {
+        return Some(("Computer", Some("Windows PC".into())));
+    }
     None
 }
 
@@ -348,8 +365,19 @@ fn from_ports(d: &Device) -> Option<Id> {
 /// labeled for what's known rather than guessing a kind of device.
 fn from_generic_ports(d: &Device) -> Option<Id> {
     let has = |p: u16| d.open_ports.contains(&p);
+    // Databases, message brokers and mail: something is running as a server.
+    if [1433, 1521, 1883, 3306, 5432, 5672, 6379, 27017, 25, 110, 143, 993, 995].into_iter().any(has) {
+        return Some(("Server", None));
+    }
     if has(445) {
         return Some(("Computer / NAS", None));
+    }
+    if has(3389) {
+        return Some(("Computer", None));
+    }
+    // Routers answer DNS too, but they're labeled as the gateway.
+    if has(53) && !d.gateway {
+        return Some(("DNS server", None));
     }
     if has(22) {
         return Some(("SSH device", None));
@@ -588,6 +616,21 @@ mod tests {
         assert_eq!(identify(&device(&[22], None)).map(|id| id.0), Some("SSH device"));
         // Specific ports still beat the vendor: an Apple MAC with only the sync port is a phone.
         assert_eq!(identify(&device(&[62078], Some("Apple"))).map(|id| id.0), Some("Phone / tablet"));
+    }
+
+    #[test]
+    fn homelab_ports() {
+        let id = |ports: &[u16]| identify(&device(ports, None));
+        assert_eq!(id(&[22, 8006]), Some(("Server", Some("Proxmox VE".into()))));
+        assert_eq!(id(&[8123]), Some(("Home automation", Some("Home Assistant".into()))));
+        assert_eq!(id(&[22, 32400]), Some(("Media server", Some("Plex".into()))));
+        assert_eq!(id(&[135, 445, 3389]), Some(("Computer", Some("Windows PC".into()))));
+        // A database makes a box a server, even one sharing files over SMB.
+        assert_eq!(id(&[22, 445, 5432]).map(|id| id.0), Some("Server"));
+        assert_eq!(id(&[53]).map(|id| id.0), Some("DNS server"));
+        let mut router = device(&[53, 80], None);
+        router.gateway = true;
+        assert_eq!(identify(&router), None);
     }
 
     #[test]

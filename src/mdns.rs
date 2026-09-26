@@ -72,13 +72,17 @@ pub struct MdnsInfo {
     pub services: BTreeMap<String, String>,
     /// Service type → interesting TXT key/values.
     pub txt: BTreeMap<String, BTreeMap<String, String>>,
+    /// Service type → the port it's offered on.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub ports: BTreeMap<String, u16>,
 }
 
 #[derive(Default)]
 struct Records {
     /// instance (lowercased) → (display name, packet source)
     instances: HashMap<String, (String, Ipv4Addr)>,
-    srv: HashMap<String, String>,
+    /// instance → (target host, port)
+    srv: HashMap<String, (String, u16)>,
     txt: HashMap<String, BTreeMap<String, String>>,
     a: HashMap<String, Ipv4Addr>,
     types: HashSet<String>,
@@ -173,7 +177,7 @@ fn absorb(rec: &mut Records, packet: &Packet, src: Ipv4Addr) {
             }
             RData::SRV(srv) => {
                 rec.instances.entry(key.clone()).or_insert((owner, src));
-                rec.srv.insert(key, srv.target.to_string().to_ascii_lowercase());
+                rec.srv.insert(key, (srv.target.to_string().to_ascii_lowercase(), srv.port));
             }
             RData::TXT(txt) => {
                 let kv: BTreeMap<String, String> = txt
@@ -235,11 +239,12 @@ fn resolve(rec: Records) -> HashMap<Ipv4Addr, MdnsInfo> {
     let mut out: HashMap<Ipv4Addr, MdnsInfo> = HashMap::new();
     for (key, (display, src)) in &rec.instances {
         let Some((instance, service)) = split_instance(display) else { continue };
-        let host = rec.srv.get(key);
-        let ip = host.and_then(|h| rec.a.get(h)).copied().unwrap_or(*src);
+        let srv = rec.srv.get(key);
+        let ip = srv.and_then(|(h, _)| rec.a.get(h)).copied().unwrap_or(*src);
         let info = out.entry(ip).or_default();
-        if let Some(h) = host {
+        if let Some((h, port)) = srv {
             info.hostname.get_or_insert_with(|| h.clone());
+            info.ports.insert(service.clone(), *port);
         }
         info.services.insert(service.clone(), instance);
         if let Some(kv) = rec.txt.get(key) {
