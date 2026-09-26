@@ -49,6 +49,17 @@ With [Homebrew](https://brew.sh), on macOS and Linux:
 brew install sanford/tap/lsnet
 ```
 
+On Windows, download `lsnet-windows-x64.zip` from the [latest release](https://github.com/sanford/lsnet/releases/latest), unzip it, and put `lsnet.exe` in a folder on your `PATH`. It needs nothing else installed. Or, from PowerShell:
+
+```powershell
+$dir = "$env:LOCALAPPDATA\Programs\lsnet"
+Invoke-WebRequest https://github.com/sanford/lsnet/releases/latest/download/lsnet-windows-x64.zip -OutFile "$env:TEMP\lsnet.zip"
+Expand-Archive "$env:TEMP\lsnet.zip" $dir -Force
+[Environment]::SetEnvironmentVariable('Path', "$([Environment]::GetEnvironmentVariable('Path', 'User'));$dir", 'User')
+```
+
+Then open a new terminal and run `lsnet`.
+
 With Cargo, if you have a [Rust toolchain](https://rustup.rs) (on Windows, see [below](#installing-rust-on-windows)):
 
 ```sh

@@ -1,6 +1,6 @@
 # Releasing lsnet
 
-A release is a version tag on this repo, a formula update in the Homebrew tap ([sanford/homebrew-tap](https://github.com/sanford/homebrew-tap)), and a GitHub Release with notes. Homebrew builds from the source tarball GitHub serves for each tag, so no binaries need to be uploaded.
+A release is a version tag on this repo, a formula update in the Homebrew tap ([sanford/homebrew-tap](https://github.com/sanford/homebrew-tap)), and a GitHub Release with notes and a Windows binary. Homebrew builds from the source tarball GitHub serves for each tag, so macOS and Linux need no binaries. Windows has no Homebrew, so its `lsnet.exe` is built from the tag and attached to the release.
 
 The examples below release `0.2.0` after `0.1.0`. Substitute the real versions.
 
@@ -125,10 +125,24 @@ Write the notes for people who use `lsnet`, not for people who work on it. Leave
 - **"Upgrading from 0.1.0",** if a default, flag or output format changed. Say what to run to get the old behavior, and whether scripts need changes.
 - **A compare link** on the last line: `https://github.com/sanford/lsnet/compare/v0.1.0...v0.2.0`
 
-Save the notes to a file outside the repo, then publish them. This needs the GitHub CLI logged in with an account that can write to `sanford/lsnet`. `gh api repos/sanford/lsnet --jq .permissions.push` should print `true`.
+Build the Windows binary from the same tarball, on a Windows machine with Rust (see "Testing on Windows"). Build from inside the unpacked source: Cargo reads `.cargo/config.toml`, which links the C runtime statically, from the current directory, not from `--manifest-path`.
+
+```powershell
+cd (New-Item -ItemType Directory -Force "$env:TEMP\lsnet-release")
+curl.exe -sSfLO https://github.com/sanford/lsnet/archive/refs/tags/v0.2.0.tar.gz
+tar xzf v0.2.0.tar.gz
+cd lsnet-0.2.0
+cargo build --locked --release
+.\target\release\lsnet.exe --version
+Compress-Archive target\release\lsnet.exe, README.md, LICENSE ..\lsnet-windows-x64.zip -Force
+```
+
+Keep the name `lsnet-windows-x64.zip`: the README's install command downloads it by that name from the latest release.
+
+Save the notes to a file outside the repo, then publish them with the zip. This needs the GitHub CLI logged in with an account that can write to `sanford/lsnet`. `gh api repos/sanford/lsnet --jq .permissions.push` should print `true`.
 
 ```sh
-gh release create v0.2.0 -R sanford/lsnet --title "lsnet 0.2.0" --notes-file /tmp/notes-0.2.0.md --verify-tag
+gh release create v0.2.0 -R sanford/lsnet --title "lsnet 0.2.0" --notes-file /tmp/notes-0.2.0.md --verify-tag lsnet-windows-x64.zip
 ```
 
 `--verify-tag` makes `gh` fail if the tag hasn't been pushed, rather than creating a new tag. To fix a typo afterwards, use `gh release edit v0.2.0 -R sanford/lsnet --notes-file ...`. Editing the notes doesn't touch the tag or the tarball.
@@ -172,4 +186,5 @@ The scan should show MAC addresses and vendors, and finish in about the same tim
 - [ ] Tarball checksum taken, and the tarball builds with `--locked`
 - [ ] `Formula/lsnet.rb` `url` and `sha256` updated; `brew style` clean; tap pushed
 - [ ] `brew upgrade`, `brew test` and `brew audit --strict --online` pass
-- [ ] GitHub Release published with hand-written notes, including upgrade notes if any behavior changed
+- [ ] `lsnet-windows-x64.zip` built from the tag's tarball
+- [ ] GitHub Release published with hand-written notes, including upgrade notes if any behavior changed, and the Windows zip attached
