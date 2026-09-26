@@ -64,11 +64,8 @@ pub async fn discover(
                     })
                 };
                 seen.insert(ip, header("server"));
-                // Only fetch a description from the device that answered. Otherwise
-                // anyone on the LAN could point us at 127.0.0.1 or the internet.
-                let location = header("location").and_then(|l| http::parse_url(&l));
                 if let Some((host, port, path)) =
-                    location.filter(|(h, ..)| *h == ip && !own_ips.contains(&ip))
+                    header("location").and_then(|l| description_url(&l, ip, own_ips))
                 {
                     fetches.spawn(async move {
                         (ip, http::get(host, port, &path, wait + fetch_grace).await)
@@ -111,4 +108,38 @@ pub async fn discover(
         info.device_type = http::tag(x, "deviceType");
     }
     out
+}
+
+/// Where to fetch a responder's description, if its LOCATION is safe to follow.
+///
+/// Only the device that answered is asked, and never this machine; otherwise
+/// anyone on the LAN could point us at 127.0.0.1 or the internet. Queries are
+/// refused too: description URLs don't have them, but "do something on GET"
+/// endpoints usually take their parameters that way.
+fn description_url(
+    location: &str,
+    responder: Ipv4Addr,
+    own_ips: &[Ipv4Addr],
+) -> Option<(Ipv4Addr, u16, String)> {
+    let (host, port, path) = http::parse_url(location)?;
+    (host == responder && !own_ips.contains(&host) && !path.contains('?'))
+        .then_some((host, port, path))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn follows_only_safe_locations() {
+        let dev: Ipv4Addr = "192.168.1.57".parse().unwrap();
+        let me: Ipv4Addr = "192.168.1.179".parse().unwrap();
+        let ok = |l: &str, from: Ipv4Addr| description_url(l, from, &[me]).is_some();
+
+        assert!(ok("http://192.168.1.57:49152/description.xml", dev));
+        assert!(!ok("http://127.0.0.1:8080/description.xml", dev));
+        assert!(!ok("http://192.168.1.1/description.xml", dev));
+        assert!(!ok("http://192.168.1.57/cgi-bin/reboot?now=1", dev));
+        assert!(!ok("http://192.168.1.179/description.xml", me));
+    }
 }
