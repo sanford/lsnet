@@ -23,7 +23,7 @@ $ lsnet
 │  192.168.1.203   ·                                        ││                                               │
 │                                                           ││                                               │
 └───────────────────────────────────────────────────────────┘└───────────────────────────────────────────────┘
- ↑↓ move  ⏎ copy IP  c copy details  / filter  r rescan  ? help  q quit
+ ↑↓ move  tab services  ⏎ copy IP  c copy details  / filter  r rescan  ? help  q quit
 ```
 
 It's meant to answer the question "what is that?" faster and more simply than [nmap](https://nmap.org). It isn't a port scanner or a security tool.
@@ -111,25 +111,43 @@ Run in a terminal, `lsnet` opens the browser shown at the top. Devices are liste
 | `h` or `?` | Show all the keys |
 | `q` or `Ctrl-c` | Quit |
 
+Selecting text with the mouse picks up both panes, so use `c` to copy the details instead. It copies every line, including any scrolled out of view, without wrapping. In narrow terminals the details appear below the list instead of beside it. Copying uses `pbcopy` on macOS and `wl-copy`, `xclip` or `xsel` on Linux. Without any of those, `lsnet` asks the terminal to do the copy, which also works over SSH in most modern terminals.
+
 ### The services view
 
 Press `Tab` in the browser, or start it with `lsnet -s`, to list services instead of devices: one row per server, sorted by address, with the device's details beside it as usual.
 
 ```
-┌ Services (23) ───────────────────────────────────────────┐
-│  ADDRESS             SERVICE         HOST                │
-│  192.168.1.14:22     SSH             diskstation         │
-│  192.168.1.14:445    SMB             diskstation         │
-│  192.168.1.14:5001   HTTPS           diskstation         │
-│› 192.168.1.14:32400  Plex            diskstation         │
-│  192.168.1.20:8123   Home Assistant  homeassistant.local │
-│  192.168.1.30:8006   Proxmox         pve                 │
-│  192.168.1.31:5432   PostgreSQL      db01                │
+$ lsnet -s
+ lsnet  14 devices on 192.168.1.0/24 (en0) in 2.0s
+┌ Services (21) ───────────────────────────────────────┐┌ diskstation ────────────────────────────────────────┐
+│  ADDRESS            SERVICE        HOST              ││ NAS · Synology DS920+                               │
+│  192.168.1.1:53     DNS            Home Router       ││                                                     │
+│  192.168.1.1:80     HTTP           Home Router       ││ IP            192.168.1.14                          │
+│  192.168.1.1:443    HTTPS          Home Router       ││ Hostname      diskstation                           │
+│  192.168.1.8:80     HTTP           Brother HL-L2350DW││ Open ports    22 SSH · 80 HTTP · 139 NetBIOS · 443  │
+│  192.168.1.8:443    HTTPS          Brother HL-L2350DW││               HTTPS · 445 SMB · 5001 HTTPS · 32400  │
+│  192.168.1.8:9100   printing       Brother HL-L2350DW││               Plex                                  │
+│  192.168.1.14:22    SSH            diskstation       ││                                                     │
+│  192.168.1.14:80    HTTP           diskstation       ││ Bonjour (mDNS)                                      │
+│  192.168.1.14:139   NetBIOS        diskstation       ││ Name          diskstation.local                     │
+│  192.168.1.14:443   HTTPS          diskstation       ││ smb           diskstation                           │
+│  192.168.1.14:445   SMB            diskstation       ││                                                     │
+│  192.168.1.14:5001  HTTPS          diskstation       ││ Web (port 80)                                       │
+│› 192.168.1.14:32400 Plex           diskstation       ││ Title         diskstation - Synology DiskStation    │
+│  192.168.1.88:80    HTTP           kp115             ││ Server        nginx                                 │
+│  192.168.1.130:22   SSH            raspberrypi.local ││                                                     │
+│  192.168.1.130:1883 MQTT           raspberrypi.local ││                                                     │
+│  192.168.1.130:8123 Home Assistant raspberrypi.local ││                                                     │
+│  192.168.1.150:22   SSH            pihole            ││                                                     │
+│  192.168.1.150:53   DNS            pihole            ││                                                     │
+│  192.168.1.150:80   HTTP           pihole            ││                                                     │
+│  192.168.1.201:3389 RDP            ·                 ││                                                     │
+└──────────────────────────────────────────────────────┘└─────────────────────────────────────────────────────┘
+ ↑↓ move  tab devices  ⏎ copy address  c copy details  / filter  r rescan  ? help  q quit
 ```
 
-It lists the open ports `lsnet` found (all but AirPlay, Cast and iPhone sync, which are how devices talk to phones rather than servers) plus the web, SSH, file-sharing, VNC and similar services devices advertise over Bonjour, on whatever port they use. This machine's own services aren't listed, since `lsnet` doesn't probe it. `lsnet -s -l` prints the same list as a table, and `lsnet -s --json` gives `ip`, `port`, `service` and `host` for each.
-
-Selecting text with the mouse picks up both panes, so use `c` to copy the details instead. It copies every line, including any scrolled out of view, without wrapping. In narrow terminals the details appear below the list instead of beside it. Copying uses `pbcopy` on macOS and `wl-copy`, `xclip` or `xsel` on Linux. Without any of those, `lsnet` asks the terminal to do the copy, which also works over SSH in most modern terminals.
+It lists the open ports `lsnet` found (all but AirPlay, Cast and iPhone sync, which are how devices talk to phones rather than servers) plus the web, SSH, file-sharing, VNC and similar services devices advertise over Bonjour, on whatever port they use. This machine's own services aren't listed, since `lsnet` doesn't probe it. `lsnet -s -l` prints the same list as a table (see [Text output](#text-output)), and `lsnet -s --json` gives `ip`, `port`, `service` and `host` for each.
 
 ### Text output
 
@@ -152,6 +170,36 @@ $ lsnet -l
  192.168.1.196  Alex's MacBook Pro  Computer (this device)  MacBook Pro (M4)
  192.168.1.201  ..................  Computer                .........................
  192.168.1.203  ..................  ......................  .........................
+
+14 devices on 192.168.1.0/24 (en0) in 2.0s
+```
+
+With `-s`, or after quitting the services view, the table lists services instead:
+
+```
+$ lsnet -s -l
+ ADDRESS             SERVICE         HOST
+ 192.168.1.1:53      DNS             Home Router
+ 192.168.1.1:80      HTTP            Home Router
+ 192.168.1.1:443     HTTPS           Home Router
+ 192.168.1.8:80      HTTP            Brother HL-L2350DW
+ 192.168.1.8:443     HTTPS           Brother HL-L2350DW
+ 192.168.1.8:9100    printing        Brother HL-L2350DW
+ 192.168.1.14:22     SSH             diskstation
+ 192.168.1.14:80     HTTP            diskstation
+ 192.168.1.14:139    NetBIOS         diskstation
+ 192.168.1.14:443    HTTPS           diskstation
+ 192.168.1.14:445    SMB             diskstation
+ 192.168.1.14:5001   HTTPS           diskstation
+ 192.168.1.14:32400  Plex            diskstation
+ 192.168.1.88:80     HTTP            kp115
+ 192.168.1.130:22    SSH             raspberrypi.local
+ 192.168.1.130:1883  MQTT            raspberrypi.local
+ 192.168.1.130:8123  Home Assistant  raspberrypi.local
+ 192.168.1.150:22    SSH             pihole
+ 192.168.1.150:53    DNS             pihole
+ 192.168.1.150:80    HTTP            pihole
+ 192.168.1.201:3389  RDP             ..................
 
 14 devices on 192.168.1.0/24 (en0) in 2.0s
 ```
