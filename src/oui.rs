@@ -2,7 +2,7 @@
 //! Wireshark's `manuf` database (GPL-2.0-or-later; regenerate with
 //! `scripts/update-oui.py`).
 
-use pnet::util::MacAddr;
+use pnet_base::MacAddr;
 use std::collections::HashMap;
 use std::sync::OnceLock;
 

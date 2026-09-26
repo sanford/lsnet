@@ -1,9 +1,8 @@
 //! Figure out which interface and subnet to scan, and where the gateway is.
 
-use crate::platform;
-use pnet::datalink::{self, NetworkInterface};
-use pnet::ipnetwork::{IpNetwork, Ipv4Network};
-use pnet::util::MacAddr;
+use crate::platform::{self, Adapter};
+use ipnetwork::Ipv4Network;
+use pnet_base::MacAddr;
 use std::net::{IpAddr, Ipv4Addr, UdpSocket};
 
 /// Largest subnet we sweep in full. Anything bigger gets narrowed to the
@@ -14,7 +13,7 @@ const MAX_PREFIX: u8 = 22;
 const HIDDEN_MAC: MacAddr = MacAddr(0x02, 0, 0, 0, 0, 0);
 
 pub struct Iface {
-    pub iface: NetworkInterface,
+    pub iface: Adapter,
     pub ip: Ipv4Addr,
     /// None when the OS hides it from us (recent macOS does, for unsigned binaries).
     pub mac: Option<MacAddr>,
@@ -40,32 +39,19 @@ impl Iface {
 }
 
 pub fn detect(name: Option<&str>) -> Result<Iface, String> {
-    let all = datalink::interfaces();
-    let own_ips = all
-        .iter()
-        .flat_map(|i| &i.ips)
-        .filter_map(|n| match n.ip() {
-            IpAddr::V4(v4) => Some(v4),
-            _ => None,
-        })
-        .collect();
+    let all = platform::adapters();
+    let own_ips = all.iter().flat_map(|a| &a.ips).map(|n| n.ip()).collect();
     let iface = match name {
+        // Windows adapter names ("Wi-Fi") are case-insensitive.
         Some(n) => all
             .into_iter()
-            .find(|i| i.name == n)
+            .find(|a| a.name == n || (cfg!(windows) && a.name.eq_ignore_ascii_case(n)))
             .ok_or_else(|| format!("no interface named '{n}'"))?,
         None => pick(all, outbound_ip())
             .ok_or("couldn't find an active network interface (try --interface)")?,
     };
 
-    let v4 = iface
-        .ips
-        .iter()
-        .find_map(|n| match n {
-            IpNetwork::V4(v4) => Some(*v4),
-            _ => None,
-        })
-        .ok_or_else(|| format!("{} has no IPv4 address", iface.name))?;
+    let v4 = *iface.ips.first().ok_or_else(|| format!("{} has no IPv4 address", iface.name))?;
     let mac = iface.mac.filter(|&m| m != MacAddr::zero() && m != HIDDEN_MAC);
 
     let full = Ipv4Network::new(v4.network(), v4.prefix()).expect("valid network");
@@ -77,7 +63,7 @@ pub fn detect(name: Option<&str>) -> Result<Iface, String> {
     };
 
     Ok(Iface {
-        gateway: platform::default_gateway(&iface.name),
+        gateway: platform::default_gateway(&iface),
         ip: v4.ip(),
         mac,
         net,
@@ -98,20 +84,21 @@ fn outbound_ip() -> Option<Ipv4Addr> {
     }
 }
 
-fn pick(all: Vec<NetworkInterface>, preferred: Option<Ipv4Addr>) -> Option<NetworkInterface> {
-    let usable = |i: &NetworkInterface| {
-        i.is_up()
-            && !i.is_loopback()
-            && i.mac.is_some_and(|m| m != MacAddr::zero())
-            && i.ips.iter().any(|n| n.is_ipv4())
+fn pick(all: Vec<Adapter>, preferred: Option<Ipv4Addr>) -> Option<Adapter> {
+    let usable = |a: &&Adapter| {
+        a.up && !a.loopback && a.mac.is_some_and(|m| m != MacAddr::zero()) && !a.ips.is_empty()
     };
     if let Some(ip) = preferred
-        && let Some(i) = all
-            .iter()
-            .find(|i| usable(i) && i.ips.iter().any(|n| n.ip() == IpAddr::V4(ip)))
-        {
-            return Some(i.clone());
-        }
-    // Outbound traffic goes through a VPN or similar; fall back to the first real LAN interface.
-    all.into_iter().find(|i| usable(i))
+        && let Some(a) = all.iter().filter(usable).find(|a| a.ips.iter().any(|n| n.ip() == ip))
+    {
+        return Some(a.clone());
+    }
+    // Outbound traffic goes through a VPN or similar; fall back to the first
+    // real LAN interface, passing over virtual switches (Hyper-V, WSL).
+    let mut usable = all.into_iter().filter(|a| usable(&a));
+    let first = usable.next()?;
+    if first.physical {
+        return Some(first);
+    }
+    Some(usable.find(|a| a.physical).unwrap_or(first))
 }

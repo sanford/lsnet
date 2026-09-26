@@ -152,6 +152,18 @@ docker stop web && docker network rm lsnet-test && docker volume rm lsnet-build
 
 The first scan runs as root and uses raw ARP. The second runs unprivileged and should still show MAC addresses from `/proc/net/arp`.
 
+## Testing on Windows
+
+The Windows code paths (IP Helper API, `SendARP`, the clipboard) are exercised by the `windows` CI job, which runs on a self-hosted runner, and can be run by hand on any Windows 10 or later machine with Rust and the Visual Studio Build Tools:
+
+```powershell
+cargo test --release
+cargo clippy --release --all-targets    # expect no warnings
+.\run.ps1 -v                            # no administrator rights needed
+```
+
+The scan should show MAC addresses and vendors, and finish in about the same time as on macOS. The CI job uploads the built `lsnet.exe` as an artifact.
+
 ## Checklist
 
 - [ ] `cargo test` and `cargo clippy` are clean, and `./run.sh` looks right

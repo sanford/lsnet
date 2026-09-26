@@ -33,23 +33,23 @@ It's meant to answer the question "what is that?" faster and more simply than [n
 - **Zero config.** It detects your interface, subnet and gateway on its own.
 - **Fast.** Every discovery method runs concurrently, and a /24 takes about 2 seconds.
 - **Identifies devices, not just addresses.** It combines what devices announce about themselves (Bonjour, UPnP), their naming conventions, web UI banners, open ports (including homelab staples like Proxmox, Plex and Home Assistant) and MAC vendors into a type and a model.
-- **Works without root.** On Linux you even get MAC addresses and vendors without it.
-- **macOS and Linux.**
+- **Works without root.** On Linux and Windows you even get MAC addresses and vendors without it.
+- **macOS, Linux and Windows.**
 - **Browse or print.** In a terminal, `lsnet` opens a browser with everything known about each device. When piped, or with `-l`, it prints a table.
 - **Find your servers.** `Tab` in the browser, or `-s`, lists every service on the network (web UIs, SSH, file shares, databases, Plex, Proxmox, Home Assistant) with the address to reach it.
 - **Scriptable.** `--json` outputs every piece of evidence behind each identification.
 
 ## Install
 
-lsnet runs on macOS and Linux (x86_64 and 64-bit ARM, including 64-bit Raspberry Pi OS).
+lsnet runs on macOS, Linux (x86_64 and 64-bit ARM, including 64-bit Raspberry Pi OS) and Windows 10 or later (x86_64).
 
-With [Homebrew](https://brew.sh):
+With [Homebrew](https://brew.sh), on macOS and Linux:
 
 ```sh
 brew install sanford/tap/lsnet
 ```
 
-With Cargo, if you have a [Rust toolchain](https://rustup.rs):
+With Cargo, if you have a [Rust toolchain](https://rustup.rs) (on Windows, see [below](#installing-rust-on-windows)):
 
 ```sh
 cargo install --git https://github.com/sanford/lsnet
@@ -64,7 +64,28 @@ cargo build --release
 ./target/release/lsnet
 ```
 
-While hacking on it, `./run.sh [ARGS]` builds, installs to `~/.local/bin`, and runs in one step.
+While hacking on it, `./run.sh [ARGS]` (or `.\run.ps1 [ARGS]` on Windows) builds, installs to `~/.local/bin`, and runs in one step.
+
+### Installing Rust on Windows
+
+Rust on Windows uses Microsoft's C++ linker, so it needs the Visual Studio Build Tools as well as Rust itself. Both install with `winget`, from PowerShell:
+
+```powershell
+winget install Microsoft.VisualStudio.2022.BuildTools --override "--wait --passive --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
+winget install Rustlang.Rustup
+```
+
+The first command installs the "Desktop development with C++" workload, about 2 GB, and takes a while. If the Build Tools are already installed, it fails with "already installed", which is fine. Add the workload from the Visual Studio Installer instead if it's missing.
+
+Then open a new terminal, so `cargo` is on your `PATH`, and check that it works:
+
+```powershell
+cargo --version
+cargo install --git https://github.com/sanford/lsnet
+lsnet
+```
+
+`lsnet` needs no administrator rights on Windows. If the scan finds devices but no names or models, check that Windows has the network set to Private rather than Public (see [Firewalls](#firewalls)).
 
 ## Usage
 
@@ -111,7 +132,7 @@ Run in a terminal, `lsnet` opens the browser shown at the top. Devices are liste
 | `h` or `?` | Show all the keys |
 | `q` or `Ctrl-c` | Quit |
 
-Selecting text with the mouse picks up both panes, so use `c` to copy the details instead. It copies every line, including any scrolled out of view, without wrapping. In narrow terminals the details appear below the list instead of beside it. Copying uses `pbcopy` on macOS and `wl-copy`, `xclip` or `xsel` on Linux. Without any of those, `lsnet` asks the terminal to do the copy, which also works over SSH in most modern terminals.
+Selecting text with the mouse picks up both panes, so use `c` to copy the details instead. It copies every line, including any scrolled out of view, without wrapping. In narrow terminals the details appear below the list instead of beside it. Copying uses `pbcopy` on macOS, `wl-copy`, `xclip` or `xsel` on Linux, and the clipboard directly on Windows. Without any of those, `lsnet` asks the terminal to do the copy, which also works over SSH in most modern terminals.
 
 ### The services view
 
@@ -213,7 +234,7 @@ The NAME column shows the friendliest name a device gives itself, in this order:
 3. A generic service or UPnP name (a file share, a printer queue, "Home Router")
 4. The host part of its DNS name from your router ("fhrouter")
 
-When MAC vendors are known (always on Linux, and with `sudo` on macOS), the column becomes NAME/VENDOR. A device with none of the names above shows its manufacturer instead, in regular weight rather than bold, so you can tell it apart from a real name:
+When MAC vendors are known (always on Linux and Windows, and with `sudo` on macOS), the column becomes NAME/VENDOR. A device with none of the names above shows its manufacturer instead, in regular weight rather than bold, so you can tell it apart from a real name:
 
 ```
 $ sudo lsnet
@@ -234,10 +255,10 @@ Empty cells are filled with dimmed dots, so even a row with little information i
 
 | Source | What it finds | Needs root |
 |---|---|---|
-| **ARP sweep** | Every device that has an IP address, including ones with no open ports, plus its MAC address | yes (or `CAP_NET_RAW` on Linux) |
+| **ARP sweep** | Every device that has an IP address, including ones with no open ports, plus its MAC address | yes (or `CAP_NET_RAW` on Linux); no on Windows |
 | **ARP cache** | MAC addresses the kernel learned during the scan | no (Linux only) |
 | **TCP probe** | Live hosts, since even a refused connection proves a device is there. Every host that answers is then checked for common server and homelab ports (databases, Proxmox, Home Assistant, Plex, Jellyfin, RDP) | no |
-| **Ping** | Devices that ignore every TCP port but still answer ICMP echo (macOS; on Linux the ARP cache already covers them) | no |
+| **Ping** | Devices that ignore every TCP port but still answer ICMP echo (macOS; on Linux and Windows ARP already covers them) | no |
 | **mDNS / Bonjour** | Friendly names ("Living Room") and model identifiers from TXT records (`AppleTV14,1`, Chromecast `md=`, printer `ty=`, HomeKit categories), plus each device's primary `.local` name from a reverse lookup of its address | no |
 | **SSDP / UPnP** | Manufacturer, model and name from each device's UPnP description, which is how routers, TVs and NASes usually identify themselves | no |
 | **Reverse DNS** | Hostnames from your router's DHCP leases | no |
@@ -247,10 +268,11 @@ Then it classifies each device using the most specific evidence available: what 
 
 ### Running without sudo
 
-Without root, `lsnet` can't send its own ARP packets. It finds devices with the TCP probe and the discovery protocols instead, and how much else you get depends on the OS:
+Without root, `lsnet` can't send its own ARP packets on macOS or Linux. It finds devices with the TCP probe and the discovery protocols instead, and how much else you get depends on the OS:
 
 - **Linux:** almost nothing is lost. The TCP probe makes the kernel look up the MAC of every live address, and `lsnet` reads the results from `/proc/net/arp`. That gives MACs and vendors, and even finds devices with no open ports.
 - **macOS:** recent versions don't let binaries that aren't Apple-signed read the ARP table or MAC addresses. Without `sudo`, the VENDOR and MAC columns are hidden, devices are identified from what they announce, and devices that are silent, fully firewalled and ignore pings are missed.
+- **Windows:** nothing is lost, and there's no need to run as administrator. Windows sends ARP requests on anyone's behalf, so the full ARP sweep always runs.
 
 On Linux, you can give the binary raw-socket access once instead of using `sudo` every time:
 
@@ -260,7 +282,7 @@ sudo setcap cap_net_raw+ep "$(which lsnet)"
 
 ### Firewalls
 
-mDNS and SSDP replies come back to `lsnet` as unicast packets from each device. A host firewall that blocks unsolicited incoming UDP can silently drop them, for example `ufw` or `firewalld` with default settings on some Linux distributions. The scan still works, but names and models will be missing. If `lsnet -v` shows no SERVICES for devices you know advertise them, check the firewall.
+mDNS and SSDP replies come back to `lsnet` as unicast packets from each device. A host firewall that blocks unsolicited incoming UDP can silently drop them, for example `ufw` or `firewalld` with default settings on some Linux distributions. The scan still works, but names and models will be missing. If `lsnet -v` shows no SERVICES for devices you know advertise them, check the firewall. On Windows, that means making sure the network is set to Private rather than Public.
 
 ## Output fields
 
@@ -279,7 +301,6 @@ In `--json`, each device includes:
 
 ## Limitations
 
-- **macOS and Linux only.** Windows isn't supported. The raw-packet library needs Npcap there.
 - **IPv4 only.** Networks larger than /22 are narrowed to your local /24 to keep scans fast.
 - **Identification is heuristic.** Devices that announce nothing and have no open ports show up with no type. Running with `sudo` at least adds their vendor, in the NAME/VENDOR column.
 - **The Linux ARP cache can be stale.** Entries for devices that just left the network can linger for a few seconds after they disconnect.

@@ -1,35 +1,88 @@
-//! OS-specific lookups: the default gateway and the kernel's ARP cache.
+//! OS-specific lookups: network adapters, the default gateway and the
+//! kernel's ARP cache.
 //!
-//! Linux exposes both under /proc. macOS (and the BSDs) only offer them
-//! through `netstat` and `arp`. The parsers take plain text so every
-//! platform's can be tested anywhere.
+//! Linux exposes the gateway and ARP cache under /proc. macOS (and the BSDs)
+//! only offer them through `netstat` and `arp`. The parsers take plain text
+//! so every platform's can be tested anywhere. Windows has an API for each
+//! (see `platform/windows.rs`).
 
-use pnet::util::MacAddr;
+use ipnetwork::Ipv4Network;
+use pnet_base::MacAddr;
 use std::net::Ipv4Addr;
 
-#[cfg(target_os = "linux")]
-pub fn default_gateway(iface: &str) -> Option<Ipv4Addr> {
-    parse_proc_route(&std::fs::read_to_string("/proc/net/route").ok()?, iface)
+#[cfg(windows)]
+mod windows;
+#[cfg(windows)]
+pub use windows::{adapters, arp_cache, default_gateway, fail_fast_on_refusal, send_arp, set_clipboard};
+
+/// A network adapter, as the OS lists it.
+#[derive(Clone)]
+pub struct Adapter {
+    /// What the user calls it: `en0`, `wlan0`, or on Windows the friendly name (`Wi-Fi`).
+    pub name: String,
+    /// Windows finds its ARP cache entries by index; elsewhere they go by name.
+    #[cfg_attr(unix, allow(dead_code))]
+    pub index: u32,
+    pub mac: Option<MacAddr>,
+    pub ips: Vec<Ipv4Network>,
+    pub up: bool,
+    pub loopback: bool,
+    /// False for virtual switches and the like. Only Windows says, so
+    /// elsewhere every adapter counts as physical.
+    pub physical: bool,
+    /// Only Windows lists the gateway with the adapter; elsewhere it's looked up by name.
+    #[cfg_attr(unix, allow(dead_code))]
+    pub gateway: Option<Ipv4Addr>,
+}
+
+#[cfg(unix)]
+pub fn adapters() -> Vec<Adapter> {
+    use ipnetwork::IpNetwork;
+    pnet_datalink::interfaces()
+        .into_iter()
+        .map(|i| Adapter {
+            ips: i
+                .ips
+                .iter()
+                .filter_map(|n| match n {
+                    IpNetwork::V4(v4) => Some(*v4),
+                    _ => None,
+                })
+                .collect(),
+            up: i.is_up(),
+            loopback: i.is_loopback(),
+            physical: true,
+            gateway: None,
+            mac: i.mac,
+            index: i.index,
+            name: i.name,
+        })
+        .collect()
 }
 
 #[cfg(target_os = "linux")]
-pub fn arp_cache(iface: &str) -> Vec<(Ipv4Addr, MacAddr)> {
+pub fn default_gateway(adapter: &Adapter) -> Option<Ipv4Addr> {
+    parse_proc_route(&std::fs::read_to_string("/proc/net/route").ok()?, &adapter.name)
+}
+
+#[cfg(target_os = "linux")]
+pub fn arp_cache(adapter: &Adapter) -> Vec<(Ipv4Addr, MacAddr)> {
     std::fs::read_to_string("/proc/net/arp")
-        .map(|text| parse_proc_arp(&text, iface))
+        .map(|text| parse_proc_arp(&text, &adapter.name))
         .unwrap_or_default()
 }
 
-#[cfg(not(target_os = "linux"))]
-pub fn default_gateway(iface: &str) -> Option<Ipv4Addr> {
-    parse_netstat(&run("netstat", &["-rn", "-f", "inet"])?, iface)
+#[cfg(all(unix, not(target_os = "linux")))]
+pub fn default_gateway(adapter: &Adapter) -> Option<Ipv4Addr> {
+    parse_netstat(&run("netstat", &["-rn", "-f", "inet"])?, &adapter.name)
 }
 
-#[cfg(not(target_os = "linux"))]
-pub fn arp_cache(iface: &str) -> Vec<(Ipv4Addr, MacAddr)> {
-    run("arp", &["-an"]).map(|text| parse_arp_an(&text, iface)).unwrap_or_default()
+#[cfg(all(unix, not(target_os = "linux")))]
+pub fn arp_cache(adapter: &Adapter) -> Vec<(Ipv4Addr, MacAddr)> {
+    run("arp", &["-an"]).map(|text| parse_arp_an(&text, &adapter.name)).unwrap_or_default()
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(all(unix, not(target_os = "linux")))]
 fn run(cmd: &str, args: &[&str]) -> Option<String> {
     let out = std::process::Command::new(cmd).args(args).output().ok()?;
     Some(String::from_utf8_lossy(&out.stdout).into_owned())
@@ -72,7 +125,7 @@ pub fn parse_proc_arp(text: &str, iface: &str) -> Vec<(Ipv4Addr, MacAddr)> {
 }
 
 /// `netstat -rn -f inet`: `default  192.168.1.1  UGScg  en0`.
-#[cfg_attr(target_os = "linux", allow(dead_code))]
+#[cfg_attr(any(target_os = "linux", windows), allow(dead_code))]
 pub fn parse_netstat(text: &str, iface: &str) -> Option<Ipv4Addr> {
     text.lines()
         .filter(|l| l.starts_with("default"))
@@ -81,7 +134,7 @@ pub fn parse_netstat(text: &str, iface: &str) -> Option<Ipv4Addr> {
 }
 
 /// `arp -an`: `? (192.168.1.1) at a4:2b:b0:1:2:3 on en0 ifscope [ethernet]`.
-#[cfg_attr(target_os = "linux", allow(dead_code))]
+#[cfg_attr(any(target_os = "linux", windows), allow(dead_code))]
 pub fn parse_arp_an(text: &str, iface: &str) -> Vec<(Ipv4Addr, MacAddr)> {
     text.lines()
         .filter_map(|line| {

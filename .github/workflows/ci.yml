@@ -1,0 +1,44 @@
+name: CI
+
+# Pushes only, never pull requests: the Windows job runs on a self-hosted
+# runner, and this repo is public, so code from forks must never reach it.
+# (Pushes to a fork run in the fork's own Actions, without our runner.)
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  unix:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - run: rustup toolchain install stable --profile minimal --component clippy
+      - run: cargo test --locked --release
+      - run: cargo clippy --locked --release --all-targets -- -D warnings
+
+  windows:
+    runs-on: [self-hosted, Windows, X64]
+    # The toolchain is installed machine-wide in C:\Rust, shared with the
+    # machine's own user, so the runner service needs no environment of its own.
+    env:
+      RUSTUP_HOME: C:\Rust\rustup
+      CARGO_HOME: C:\Rust\cargo
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - run: Add-Content $env:GITHUB_PATH 'C:\Rust\cargo\bin'
+      - uses: actions/checkout@v5
+      - run: cargo test --locked --release
+      - run: cargo clippy --locked --release --all-targets -- -D warnings
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lsnet-windows-x64
+          path: target/release/lsnet.exe
