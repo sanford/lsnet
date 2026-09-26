@@ -40,9 +40,14 @@ pub fn sweep(targets: &[Ipv4Addr], wait: Duration) -> HashSet<Ipv4Addr> {
         }
         let end = Instant::now() + wait / 2;
         let mut buf = [0u8; 1500];
-        while let Some(left) = end.checked_duration_since(Instant::now()).filter(|d| !d.is_zero()) {
+        while let Some(left) = end
+            .checked_duration_since(Instant::now())
+            .filter(|d| !d.is_zero())
+        {
             let _ = sock.set_read_timeout(Some(left));
-            let Ok((n, SocketAddr::V4(from))) = sock.recv_from(&mut buf) else { continue };
+            let Ok((n, SocketAddr::V4(from))) = sock.recv_from(&mut buf) else {
+                continue;
+            };
             // Any echo reply proves the sender is alive, even one meant for another
             // process's ping, so there's no need to match the identifier (which
             // Linux rewrites anyway).
@@ -90,7 +95,10 @@ fn is_echo_reply(pkt: &[u8]) -> bool {
 }
 
 fn checksum(data: &[u8]) -> u16 {
-    let mut sum: u32 = data.chunks(2).map(|c| u32::from(u16::from_be_bytes([c[0], *c.get(1).unwrap_or(&0)]))).sum();
+    let mut sum: u32 = data
+        .chunks(2)
+        .map(|c| u32::from(u16::from_be_bytes([c[0], *c.get(1).unwrap_or(&0)])))
+        .sum();
     while sum > 0xffff {
         sum = (sum & 0xffff) + (sum >> 16);
     }

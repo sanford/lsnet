@@ -29,7 +29,10 @@ pub fn sweep(ifc: &Iface, targets: &[Ipv4Addr], wait: Duration) -> io::Result<Fo
 
     // Replies go to the source MAC we put in the frame, so we must know our real one.
     let Some(own_mac) = ifc.mac else {
-        return Err(io::Error::new(io::ErrorKind::PermissionDenied, "own MAC address is hidden"));
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "own MAC address is hidden",
+        ));
     };
     let iface = pnet_datalink::interfaces()
         .into_iter()
@@ -56,11 +59,15 @@ pub fn sweep(ifc: &Iface, targets: &[Ipv4Addr], wait: Duration) -> io::Result<Fo
         thread::spawn(move || {
             while !stop.load(Ordering::Relaxed) {
                 let Ok(frame) = rx.next() else { continue };
-                let Some(eth) = EthernetPacket::new(frame) else { continue };
+                let Some(eth) = EthernetPacket::new(frame) else {
+                    continue;
+                };
                 if eth.get_ethertype() != EtherTypes::Arp {
                     continue;
                 }
-                let Some(arp) = ArpPacket::new(eth.payload()) else { continue };
+                let Some(arp) = ArpPacket::new(eth.payload()) else {
+                    continue;
+                };
                 // Any ARP traffic (replies, and other hosts' requests) proves the sender is alive.
                 let ip = arp.get_sender_proto_addr();
                 if net.contains(ip) && ip != own_ip && !ip.is_unspecified() {
@@ -74,14 +81,20 @@ pub fn sweep(ifc: &Iface, targets: &[Ipv4Addr], wait: Duration) -> io::Result<Fo
     for round in 0..2 {
         let pending: Vec<_> = {
             let f = found.lock().unwrap();
-            targets.iter().filter(|ip| !f.contains_key(ip)).copied().collect()
+            targets
+                .iter()
+                .filter(|ip| !f.contains_key(ip))
+                .copied()
+                .collect()
         };
         for (i, &target) in pending.iter().enumerate() {
             let frame = arp_request(own_mac, ifc.ip, target);
             if let Some(Err(e)) = tx.send_to(&frame, None)
-                && round == 0 && i == 0 {
-                    return Err(e);
-                }
+                && round == 0
+                && i == 0
+            {
+                return Err(e);
+            }
             if i % 64 == 63 {
                 thread::sleep(Duration::from_millis(2)); // don't overrun the send buffer
             }
@@ -93,7 +106,6 @@ pub fn sweep(ifc: &Iface, targets: &[Ipv4Addr], wait: Duration) -> io::Result<Fo
     let found = found.lock().unwrap().clone();
     Ok(found)
 }
-
 
 /// Active ARP sweep through `SendARP`, which needs no privileges. Each
 /// request blocks until the address answers or Windows gives up, which takes
@@ -117,7 +129,9 @@ pub fn sweep(ifc: &Iface, targets: &[Ipv4Addr], wait: Duration) -> io::Result<Fo
     drop(tx);
     let mut found = Found::new();
     while let Some(left) = deadline.checked_duration_since(Instant::now()) {
-        let Ok((ip, mac)) = rx.recv_timeout(left) else { break };
+        let Ok((ip, mac)) = rx.recv_timeout(left) else {
+            break;
+        };
         found.insert(ip, mac);
     }
     Ok(found)
@@ -154,7 +168,10 @@ pub fn read_cache(ifc: &Iface) -> Found {
     platform::arp_cache(&ifc.iface)
         .into_iter()
         .filter(|(ip, mac)| {
-            ifc.net.contains(*ip) && *ip != ifc.ip && *ip != ifc.net.broadcast() && *mac != MacAddr::broadcast()
+            ifc.net.contains(*ip)
+                && *ip != ifc.ip
+                && *ip != ifc.net.broadcast()
+                && *mac != MacAddr::broadcast()
         })
         .collect()
 }

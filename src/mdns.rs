@@ -60,8 +60,20 @@ const SERVICE_TYPES: &[&str] = &[
 
 /// TXT keys that carry model or identity information; everything else is noise.
 const TXT_KEYS: &[&str] = &[
-    "model", "am", "md", "fn", "ty", "product", "ci", "rpmd", "manufacturer", "usb_mfg",
-    "usb_mdl", "mn", "vn", "osxvers",
+    "model",
+    "am",
+    "md",
+    "fn",
+    "ty",
+    "product",
+    "ci",
+    "rpmd",
+    "manufacturer",
+    "usb_mfg",
+    "usb_mdl",
+    "mn",
+    "vn",
+    "osxvers",
 ];
 
 #[derive(Default, Clone, Serialize)]
@@ -177,7 +189,8 @@ fn absorb(rec: &mut Records, packet: &Packet, src: Ipv4Addr) {
             }
             RData::SRV(srv) => {
                 rec.instances.entry(key.clone()).or_insert((owner, src));
-                rec.srv.insert(key, (srv.target.to_string().to_ascii_lowercase(), srv.port));
+                rec.srv
+                    .insert(key, (srv.target.to_string().to_ascii_lowercase(), srv.port));
             }
             RData::TXT(txt) => {
                 let kv: BTreeMap<String, String> = txt
@@ -214,7 +227,9 @@ fn parse_reverse(name: &str) -> Option<Ipv4Addr> {
         .split('.')
         .map(|o| o.parse().ok())
         .collect::<Option<_>>()?;
-    let [d, c, b, a] = octets[..] else { return None };
+    let [d, c, b, a] = octets[..] else {
+        return None;
+    };
     Some(Ipv4Addr::new(a, b, c, d))
 }
 
@@ -238,7 +253,9 @@ fn split_instance(name: &str) -> Option<(String, String)> {
 fn resolve(rec: Records) -> HashMap<Ipv4Addr, MdnsInfo> {
     let mut out: HashMap<Ipv4Addr, MdnsInfo> = HashMap::new();
     for (key, (display, src)) in &rec.instances {
-        let Some((instance, service)) = split_instance(display) else { continue };
+        let Some((instance, service)) = split_instance(display) else {
+            continue;
+        };
         let srv = rec.srv.get(key);
         let ip = srv.and_then(|(h, _)| rec.a.get(h)).copied().unwrap_or(*src);
         let info = out.entry(ip).or_default();

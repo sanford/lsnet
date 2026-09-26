@@ -13,7 +13,9 @@ use std::net::Ipv4Addr;
 #[cfg(windows)]
 mod windows;
 #[cfg(windows)]
-pub use windows::{adapters, arp_cache, default_gateway, fail_fast_on_refusal, send_arp, set_clipboard};
+pub use windows::{
+    adapters, arp_cache, default_gateway, fail_fast_on_refusal, send_arp, set_clipboard,
+};
 
 /// A network adapter, as the OS lists it.
 #[derive(Clone)]
@@ -62,7 +64,10 @@ pub fn adapters() -> Vec<Adapter> {
 
 #[cfg(target_os = "linux")]
 pub fn default_gateway(adapter: &Adapter) -> Option<Ipv4Addr> {
-    parse_proc_route(&std::fs::read_to_string("/proc/net/route").ok()?, &adapter.name)
+    parse_proc_route(
+        &std::fs::read_to_string("/proc/net/route").ok()?,
+        &adapter.name,
+    )
 }
 
 #[cfg(target_os = "linux")]
@@ -79,7 +84,9 @@ pub fn default_gateway(adapter: &Adapter) -> Option<Ipv4Addr> {
 
 #[cfg(all(unix, not(target_os = "linux")))]
 pub fn arp_cache(adapter: &Adapter) -> Vec<(Ipv4Addr, MacAddr)> {
-    run("arp", &["-an"]).map(|text| parse_arp_an(&text, &adapter.name)).unwrap_or_default()
+    run("arp", &["-an"])
+        .map(|text| parse_arp_an(&text, &adapter.name))
+        .unwrap_or_default()
 }
 
 #[cfg(all(unix, not(target_os = "linux")))]
@@ -139,7 +146,11 @@ pub fn parse_arp_an(text: &str, iface: &str) -> Vec<(Ipv4Addr, MacAddr)> {
     text.lines()
         .filter_map(|line| {
             let words: Vec<&str> = line.split_whitespace().collect();
-            let ip: Ipv4Addr = words.get(1)?.trim_matches(|c| c == '(' || c == ')').parse().ok()?;
+            let ip: Ipv4Addr = words
+                .get(1)?
+                .trim_matches(|c| c == '(' || c == ')')
+                .parse()
+                .ok()?;
             let mac = parse_mac(words.get(3)?)?;
             let on_iface = words.windows(2).any(|w| w[0] == "on" && w[1] == iface);
             on_iface.then_some((ip, mac))
@@ -170,8 +181,14 @@ eth0\t0000000A\t00000000\t0001\t0\t0\t100\t00FFFFFF\t0\t0\t0
 
     #[test]
     fn proc_route() {
-        assert_eq!(parse_proc_route(PROC_ROUTE, "wlan0"), Some(Ipv4Addr::new(192, 168, 1, 1)));
-        assert_eq!(parse_proc_route(PROC_ROUTE, "eth0"), Some(Ipv4Addr::new(10, 0, 0, 1)));
+        assert_eq!(
+            parse_proc_route(PROC_ROUTE, "wlan0"),
+            Some(Ipv4Addr::new(192, 168, 1, 1))
+        );
+        assert_eq!(
+            parse_proc_route(PROC_ROUTE, "eth0"),
+            Some(Ipv4Addr::new(10, 0, 0, 1))
+        );
         assert_eq!(parse_proc_route(PROC_ROUTE, "docker0"), None);
     }
 
@@ -185,7 +202,10 @@ IP address       HW type     Flags       HW address            Mask     Device
 ";
         assert_eq!(
             parse_proc_arp(text, "wlan0"),
-            vec![(Ipv4Addr::new(192, 168, 1, 1), MacAddr::new(0x1c, 0xd6, 0xbe, 0x3c, 0x62, 0x8d))]
+            vec![(
+                Ipv4Addr::new(192, 168, 1, 1),
+                MacAddr::new(0x1c, 0xd6, 0xbe, 0x3c, 0x62, 0x8d)
+            )]
         );
     }
 
@@ -204,7 +224,10 @@ IP address       HW type     Flags       HW address            Mask     Device
                     ? (192.168.1.8) at c0:b5:d7:e7:74:7d on en1 ifscope [ethernet]\n";
         assert_eq!(
             parse_arp_an(text, "en0"),
-            vec![(Ipv4Addr::new(192, 168, 1, 1), MacAddr::new(0xa4, 0x2b, 0, 1, 2, 0xff))]
+            vec![(
+                Ipv4Addr::new(192, 168, 1, 1),
+                MacAddr::new(0xa4, 0x2b, 0, 1, 2, 0xff)
+            )]
         );
     }
 }

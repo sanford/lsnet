@@ -36,7 +36,12 @@ impl Json {
     pub fn new(s: &Service, devices: &[Device]) -> Self {
         let d = &devices[s.device];
         let host = d.name.clone().or_else(|| d.hostname.clone());
-        Json { ip: s.ip, port: s.port, service: s.name, host }
+        Json {
+            ip: s.ip,
+            port: s.port,
+            service: s.name,
+            host,
+        }
     }
 }
 
@@ -45,11 +50,17 @@ impl Json {
 pub fn list(devices: &[Device]) -> Vec<Service> {
     let mut found: BTreeMap<(Ipv4Addr, u16), (usize, Option<&'static str>)> = BTreeMap::new();
     for (i, d) in devices.iter().enumerate().filter(|(_, d)| !d.this_device) {
-        for &port in d.open_ports.iter().filter(|p| !DEVICE_PROTOCOLS.contains(p)) {
+        for &port in d
+            .open_ports
+            .iter()
+            .filter(|p| !DEVICE_PROTOCOLS.contains(p))
+        {
             found.insert((d.ip, port), (i, port_name(port)));
         }
         let advertised = d.mdns.iter().flat_map(|m| &m.ports);
-        for (name, &port) in advertised.filter_map(|(svc, port)| Some((advertised_name(svc)?, port))) {
+        for (name, &port) in
+            advertised.filter_map(|(svc, port)| Some((advertised_name(svc)?, port)))
+        {
             // An app's own port (Plex, Home Assistant) beats a generic advertised
             // name like HTTP, which beats a guess from the port number.
             let slot = found.entry((d.ip, port)).or_insert((i, None));
@@ -60,7 +71,12 @@ pub fn list(devices: &[Device]) -> Vec<Service> {
     }
     found
         .into_iter()
-        .map(|((ip, port), (device, name))| Service { device, ip, port, name })
+        .map(|((ip, port), (device, name))| Service {
+            device,
+            ip,
+            port,
+            name,
+        })
         .collect()
 }
 
@@ -151,7 +167,10 @@ mod tests {
         me.this_device = true;
 
         let devices = [phone, me, nas];
-        let rows: Vec<_> = list(&devices).iter().map(|s| (s.address(), s.device, s.name)).collect();
+        let rows: Vec<_> = list(&devices)
+            .iter()
+            .map(|s| (s.address(), s.device, s.name))
+            .collect();
         assert_eq!(
             rows,
             [

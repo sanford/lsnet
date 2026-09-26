@@ -10,27 +10,38 @@ use std::ptr;
 use windows_sys::Win32::Foundation::{ERROR_BUFFER_OVERFLOW, GlobalFree, NO_ERROR};
 use windows_sys::Win32::NetworkManagement::IpHelper::{
     FreeMibTable, GAA_FLAG_INCLUDE_GATEWAYS, GAA_FLAG_SKIP_ANYCAST, GAA_FLAG_SKIP_DNS_SERVER,
-    GAA_FLAG_SKIP_MULTICAST, GetAdaptersAddresses, GetIfEntry2, GetIpNetTable2, IF_TYPE_SOFTWARE_LOOPBACK,
-    IP_ADAPTER_ADDRESSES_LH, MIB_IF_ROW2, MIB_IPNET_TABLE2, SendARP,
+    GAA_FLAG_SKIP_MULTICAST, GetAdaptersAddresses, GetIfEntry2, GetIpNetTable2,
+    IF_TYPE_SOFTWARE_LOOPBACK, IP_ADAPTER_ADDRESSES_LH, MIB_IF_ROW2, MIB_IPNET_TABLE2, SendARP,
 };
 use windows_sys::Win32::NetworkManagement::Ndis::IfOperStatusUp;
 use windows_sys::Win32::Networking::WinSock::{
-    AF_INET, NlnsIncomplete, SIO_TCP_INITIAL_RTO, SOCKADDR, SOCKADDR_IN, SOCKET, TCP_INITIAL_RTO_PARAMETERS,
-    WSAIoctl,
+    AF_INET, NlnsIncomplete, SIO_TCP_INITIAL_RTO, SOCKADDR, SOCKADDR_IN, SOCKET,
+    TCP_INITIAL_RTO_PARAMETERS, WSAIoctl,
 };
-use windows_sys::Win32::System::DataExchange::{CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData};
+use windows_sys::Win32::System::DataExchange::{
+    CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData,
+};
 use windows_sys::Win32::System::Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalUnlock};
 use windows_sys::Win32::System::Ole::CF_UNICODETEXT;
 
 pub fn adapters() -> Vec<Adapter> {
-    let flags = GAA_FLAG_INCLUDE_GATEWAYS | GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST | GAA_FLAG_SKIP_DNS_SERVER;
+    let flags = GAA_FLAG_INCLUDE_GATEWAYS
+        | GAA_FLAG_SKIP_ANYCAST
+        | GAA_FLAG_SKIP_MULTICAST
+        | GAA_FLAG_SKIP_DNS_SERVER;
     // The list's size isn't known up front: ask, and grow the buffer if told to.
     let mut size: u32 = 16 * 1024;
     let mut buf: Vec<u64>; // u64 for the structs' alignment
     loop {
         buf = vec![0; (size as usize).div_ceil(8)];
         let ret = unsafe {
-            GetAdaptersAddresses(u32::from(AF_INET), flags, ptr::null(), buf.as_mut_ptr().cast(), &mut size)
+            GetAdaptersAddresses(
+                u32::from(AF_INET),
+                flags,
+                ptr::null(),
+                buf.as_mut_ptr().cast(),
+                &mut size,
+            )
         };
         match ret {
             NO_ERROR => break,
@@ -54,12 +65,14 @@ pub fn adapters() -> Vec<Adapter> {
             }
             addr = u.Next;
         }
-        let gateway = unsafe { a.FirstGatewayAddress.as_ref() }.and_then(|g| unsafe { ipv4(g.Address.lpSockaddr) });
+        let gateway = unsafe { a.FirstGatewayAddress.as_ref() }
+            .and_then(|g| unsafe { ipv4(g.Address.lpSockaddr) });
         let m = &a.PhysicalAddress;
         out.push(Adapter {
             name: unsafe { wide_str(a.FriendlyName) },
             index,
-            mac: (a.PhysicalAddressLength == 6).then(|| MacAddr::new(m[0], m[1], m[2], m[3], m[4], m[5])),
+            mac: (a.PhysicalAddressLength == 6)
+                .then(|| MacAddr::new(m[0], m[1], m[2], m[3], m[4], m[5])),
             ips,
             up: a.OperStatus == IfOperStatusUp,
             loopback: a.IfType == IF_TYPE_SOFTWARE_LOOPBACK,
@@ -75,7 +88,9 @@ pub fn adapters() -> Vec<Adapter> {
 fn is_hardware(index: u32) -> bool {
     let mut row: MIB_IF_ROW2 = unsafe { std::mem::zeroed() };
     row.InterfaceIndex = index;
-    unsafe { GetIfEntry2(&mut row) == NO_ERROR && row.InterfaceAndOperStatusFlags._bitfield & 1 != 0 }
+    unsafe {
+        GetIfEntry2(&mut row) == NO_ERROR && row.InterfaceAndOperStatusFlags._bitfield & 1 != 0
+    }
 }
 
 pub fn default_gateway(adapter: &Adapter) -> Option<Ipv4Addr> {
@@ -93,7 +108,11 @@ pub fn arp_cache(adapter: &Adapter) -> Vec<(Ipv4Addr, MacAddr)> {
     };
     let found = rows
         .iter()
-        .filter(|r| r.InterfaceIndex == adapter.index && r.State > NlnsIncomplete && r.PhysicalAddressLength == 6)
+        .filter(|r| {
+            r.InterfaceIndex == adapter.index
+                && r.State > NlnsIncomplete
+                && r.PhysicalAddressLength == 6
+        })
         .map(|r| {
             let ip = Ipv4Addr::from(unsafe { r.Address.Ipv4.sin_addr.S_un.S_addr }.to_ne_bytes());
             let m = &r.PhysicalAddress;
@@ -119,7 +138,8 @@ pub fn send_arp(target: Ipv4Addr, source: Ipv4Addr) -> Option<MacAddr> {
             &mut len,
         )
     };
-    (ret == NO_ERROR && len == 6).then(|| MacAddr::new(mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]))
+    (ret == NO_ERROR && len == 6)
+        .then(|| MacAddr::new(mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]))
 }
 
 /// Windows answers a refused connection (RST) by trying again, so a closed
@@ -158,7 +178,11 @@ pub fn set_clipboard(text: &str) -> bool {
         }
         EmptyClipboard();
         let mem = GlobalAlloc(GMEM_MOVEABLE, wide.len() * 2);
-        let dst = if mem.is_null() { ptr::null_mut() } else { GlobalLock(mem).cast::<u16>() };
+        let dst = if mem.is_null() {
+            ptr::null_mut()
+        } else {
+            GlobalLock(mem).cast::<u16>()
+        };
         let ok = !dst.is_null() && {
             ptr::copy_nonoverlapping(wide.as_ptr(), dst, wide.len());
             GlobalUnlock(mem);
@@ -179,7 +203,9 @@ unsafe fn ipv4(sa: *const SOCKADDR) -> Option<Ipv4Addr> {
         return None;
     }
     let sin = unsafe { &*(sa as *const SOCKADDR).cast::<SOCKADDR_IN>() };
-    Some(Ipv4Addr::from(unsafe { sin.sin_addr.S_un.S_addr }.to_ne_bytes()))
+    Some(Ipv4Addr::from(
+        unsafe { sin.sin_addr.S_un.S_addr }.to_ne_bytes(),
+    ))
 }
 
 unsafe fn wide_str(p: *const u16) -> String {

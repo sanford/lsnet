@@ -30,11 +30,17 @@ impl Response {
 /// and, at the deadline, keep whatever has arrived.
 pub async fn get(ip: Ipv4Addr, port: u16, path: &str, wait: Duration) -> Option<Response> {
     let deadline = Instant::now() + wait;
-    let mut stream = timeout_at(deadline, TcpStream::connect((ip, port))).await.ok()?.ok()?;
+    let mut stream = timeout_at(deadline, TcpStream::connect((ip, port)))
+        .await
+        .ok()?
+        .ok()?;
     let req = format!(
         "GET {path} HTTP/1.0\r\nHost: {ip}:{port}\r\nUser-Agent: lsnet\r\nConnection: close\r\n\r\n"
     );
-    timeout_at(deadline, stream.write_all(req.as_bytes())).await.ok()?.ok()?;
+    timeout_at(deadline, stream.write_all(req.as_bytes()))
+        .await
+        .ok()?
+        .ok()?;
 
     let mut buf = Vec::new();
     let mut chunk = [0u8; 8192];
@@ -49,7 +55,10 @@ pub async fn get(ip: Ipv4Addr, port: u16, path: &str, wait: Duration) -> Option<
     let headers = String::from_utf8_lossy(&buf[..split]).to_string();
     let mut body = buf[split + 4..].to_vec();
     // Some embedded servers (ESP32 web UIs) send chunked gzip no matter what we ask for.
-    if headers.to_ascii_lowercase().contains("transfer-encoding: chunked") {
+    if headers
+        .to_ascii_lowercase()
+        .contains("transfer-encoding: chunked")
+    {
         body = dechunk(&body);
     }
     if body.starts_with(&[0x1f, 0x8b]) {
@@ -75,7 +84,12 @@ fn complete(buf: &[u8]) -> bool {
     }
     headers
         .lines()
-        .find_map(|l| l.strip_prefix("content-length:")?.trim().parse::<usize>().ok())
+        .find_map(|l| {
+            l.strip_prefix("content-length:")?
+                .trim()
+                .parse::<usize>()
+                .ok()
+        })
         .is_some_and(|len| body.len() >= len)
 }
 
@@ -99,7 +113,8 @@ fn dechunk(mut data: &[u8]) -> Vec<u8> {
     let mut out = Vec::new();
     while let Some(eol) = data.windows(2).position(|w| w == b"\r\n") {
         let size_str = String::from_utf8_lossy(&data[..eol]);
-        let Ok(size) = usize::from_str_radix(size_str.split(';').next().unwrap_or("").trim(), 16) else {
+        let Ok(size) = usize::from_str_radix(size_str.split(';').next().unwrap_or("").trim(), 16)
+        else {
             break;
         };
         let start = eol + 2;
@@ -117,7 +132,13 @@ fn dechunk(mut data: &[u8]) -> Vec<u8> {
 pub fn parse_url(url: &str) -> Option<(Ipv4Addr, u16, String)> {
     let rest = url.strip_prefix("http://")?;
     let (authority, path) = rest.split_once('/').map_or((rest, ""), |(a, p)| (a, p));
-    let (host, port) = authority.split_once(':').map_or((authority, "80"), |(h, p)| (h, p));
+    let (host, port) = authority
+        .split_once(':')
+        .map_or((authority, "80"), |(h, p)| (h, p));
+    // The path goes into the request line verbatim; a CR or space would break it.
+    if path.chars().any(|c| c.is_control() || c.is_whitespace()) {
+        return None;
+    }
     Some((host.parse().ok()?, port.parse().ok()?, format!("/{path}")))
 }
 
@@ -148,19 +169,31 @@ mod tests {
     fn parses_urls() {
         assert_eq!(
             parse_url("http://192.168.1.1:41389/rootDesc.xml"),
-            Some(("192.168.1.1".parse().unwrap(), 41389, "/rootDesc.xml".into()))
+            Some((
+                "192.168.1.1".parse().unwrap(),
+                41389,
+                "/rootDesc.xml".into()
+            ))
         );
-        assert_eq!(parse_url("http://10.0.0.2"), Some(("10.0.0.2".parse().unwrap(), 80, "/".into())));
+        assert_eq!(
+            parse_url("http://10.0.0.2"),
+            Some(("10.0.0.2".parse().unwrap(), 80, "/".into()))
+        );
+        assert_eq!(parse_url("http://10.0.0.2/a\rX-Evil: 1"), None);
     }
 
     #[test]
     fn dechunks() {
-        assert_eq!(dechunk(b"5\r\nhello\r\n6\r\n world\r\n0\r\n\r\n"), b"hello world");
+        assert_eq!(
+            dechunk(b"5\r\nhello\r\n6\r\n world\r\n0\r\n\r\n"),
+            b"hello world"
+        );
     }
 
     #[test]
     fn extracts_tags() {
-        let xml = "<root><device><friendlyName>Den  TV &amp; more</friendlyName><Title x='1'>Hi</Title>";
+        let xml =
+            "<root><device><friendlyName>Den  TV &amp; more</friendlyName><Title x='1'>Hi</Title>";
         assert_eq!(tag(xml, "friendlyName").as_deref(), Some("Den TV & more"));
         assert_eq!(tag(xml, "title").as_deref(), Some("Hi"));
         assert_eq!(tag(xml, "missing"), None);

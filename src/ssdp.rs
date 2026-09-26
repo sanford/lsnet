@@ -57,11 +57,18 @@ pub async fn discover(
                 let header = |name: &str| {
                     resp.lines().find_map(|l| {
                         let (k, v) = l.split_once(':')?;
-                        k.trim().eq_ignore_ascii_case(name).then(|| v.trim().to_string())
+                        k.trim()
+                            .eq_ignore_ascii_case(name)
+                            .then(|| v.trim().to_string())
                     })
                 };
                 seen.insert(ip, header("server"));
-                if let Some((host, port, path)) = header("location").and_then(|l| http::parse_url(&l)) {
+                // Only fetch a description from the device that answered. Otherwise
+                // anyone on the LAN could point us at 127.0.0.1 or the internet.
+                let location = header("location").and_then(|l| http::parse_url(&l));
+                if let Some((host, port, path)) =
+                    location.filter(|(h, ..)| *h == ip && ip != local_ip)
+                {
                     fetches.spawn(async move {
                         (ip, http::get(host, port, &path, wait + fetch_grace).await)
                     });
@@ -78,12 +85,22 @@ pub async fn discover(
 
     let mut out: HashMap<Ipv4Addr, SsdpInfo> = seen
         .into_iter()
-        .map(|(ip, server)| (ip, SsdpInfo { server, ..Default::default() }))
+        .map(|(ip, server)| {
+            (
+                ip,
+                SsdpInfo {
+                    server,
+                    ..Default::default()
+                },
+            )
+        })
         .collect();
 
     let grace_end = Instant::now() + fetch_grace;
     while let Ok(Some(joined)) = timeout_at(grace_end, fetches.join_next()).await {
-        let Ok((ip, Some(resp))) = joined else { continue };
+        let Ok((ip, Some(resp))) = joined else {
+            continue;
+        };
         let info = out.entry(ip).or_default();
         let x = &resp.body;
         info.friendly_name = http::tag(x, "friendlyName");

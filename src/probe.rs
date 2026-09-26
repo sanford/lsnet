@@ -21,7 +21,8 @@ const LIVENESS: &[u16] = &[80, 443, 22, 445, 62078, 7000, 8008, 9100];
 /// SNMP) plus homelab apps that give themselves away by port.
 const SERVICES: &[u16] = &[
     21, 25, 53, 110, 111, 135, 139, 143, 993, 995, 1433, 1521, 1883, 3306, 3389, 5001, 5060, 5432,
-    5672, 6379, 8000, 8001, 8006, 8080, 8081, 8096, 8123, 8443, 8888, 9090, 9091, 9443, 27017, 32400,
+    5672, 6379, 8000, 8001, 8006, 8080, 8081, 8096, 8123, 8443, 8888, 9090, 9091, 9443, 27017,
+    32400,
 ];
 
 /// How long to wait on the ports of a host that just proved it's awake,
@@ -43,7 +44,9 @@ pub async fn scan(targets: &[Ipv4Addr], wait: Duration) -> HashMap<Ipv4Addr, Vec
     while let Some(Ok((ip, port, open))) = set.join_next().await {
         let Some(open) = open else { continue };
         if !alive.contains_key(&ip) {
-            let left = deadline.saturating_duration_since(Instant::now()).max(AWAKE_WAIT);
+            let left = deadline
+                .saturating_duration_since(Instant::now())
+                .max(AWAKE_WAIT);
             for &port in SERVICES {
                 set.spawn(check(ip, port, left));
             }
@@ -120,10 +123,18 @@ mod tests {
     #[tokio::test]
     async fn refusals_come_back_at_once() {
         // A port that was just free, so connecting to it is refused.
-        let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
         let start = std::time::Instant::now();
         let (_, _, open) = check(Ipv4Addr::LOCALHOST, port, Duration::from_secs(5)).await;
         assert_eq!(open, Some(false));
-        assert!(start.elapsed() < Duration::from_millis(500), "took {:?}", start.elapsed());
+        assert!(
+            start.elapsed() < Duration::from_millis(500),
+            "took {:?}",
+            start.elapsed()
+        );
     }
 }
