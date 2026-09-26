@@ -13,11 +13,11 @@ permissions:
   contents: read
 
 jobs:
-  # Runs the owner starts (a push, a manual run, a re-run) go straight
-  # through. Anyone else's wait here, on a GitHub-hosted runner, until the
-  # owner approves them in the `approval` environment.
+  # Runs the owner's accounts start (a push, a manual run, a re-run) go
+  # straight through. Anyone else's wait here, on a GitHub-hosted runner,
+  # until the owner approves them in the `approval` environment.
   approve:
-    if: github.triggering_actor != github.repository_owner
+    if: ${{ !contains(fromJSON('["sanford", "supercapture"]'), github.triggering_actor) }}
     runs-on: ubuntu-latest
     environment: approval
     steps:
