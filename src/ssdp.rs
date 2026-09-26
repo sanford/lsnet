@@ -30,6 +30,7 @@ pub struct SsdpInfo {
 pub async fn discover(
     local_ip: Ipv4Addr,
     net: Ipv4Network,
+    own_ips: &[Ipv4Addr],
     wait: Duration,
     fetch_grace: Duration,
 ) -> HashMap<Ipv4Addr, SsdpInfo> {
@@ -67,7 +68,7 @@ pub async fn discover(
                 // anyone on the LAN could point us at 127.0.0.1 or the internet.
                 let location = header("location").and_then(|l| http::parse_url(&l));
                 if let Some((host, port, path)) =
-                    location.filter(|(h, ..)| *h == ip && ip != local_ip)
+                    location.filter(|(h, ..)| *h == ip && !own_ips.contains(&ip))
                 {
                     fetches.spawn(async move {
                         (ip, http::get(host, port, &path, wait + fetch_grace).await)

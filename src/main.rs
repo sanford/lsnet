@@ -241,7 +241,7 @@ fn scan(args: &Args) -> Result<Scan, String> {
             tokio::join!(
                 probe::scan(&targets, wait),
                 mdns::discover(ifc.ip, &targets, wait),
-                ssdp::discover(ifc.ip, ifc.net, wait, grace),
+                ssdp::discover(ifc.ip, ifc.net, &ifc.own_ips, wait, grace),
             )
         });
         (
