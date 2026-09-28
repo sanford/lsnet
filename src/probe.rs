@@ -141,7 +141,7 @@ fn max_in_flight() -> usize {
             }
         };
         #[cfg(windows)]
-        let limit = 10_240;
+        let limit: usize = 10_240;
         limit.saturating_sub(512).clamp(128, 8_192)
     })
 }
