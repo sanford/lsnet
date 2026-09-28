@@ -29,7 +29,7 @@ Azure Artifact Signing was called Trusted Signing until early 2026. Microsoft re
 If we're signing as an individual in the US or Canada, use Azure Artifact Signing:
 
 - It's the cheapest option that shows our own name as the publisher.
-- It fits the current release process. The Windows exe is already built from the tag on the Windows box (see [RELEASING.md](../RELEASING.md)), and signing would slot in right before zipping, with no hardware token.
+- It fits the current release process. The Windows exe is already built from the tag on the Windows box (as the release process does now), and signing would slot in right before zipping, with no hardware token.
 
 SignPath is free, but it has three drawbacks for lsnet:
 
