@@ -32,6 +32,8 @@ const KEYS: &[(&str, &str)] = &[
     ("PgUp PgDn", "Scroll details half a page"),
     ("Ctrl-u Ctrl-d", "Scroll details half a page"),
     ("J K", "Scroll details one line"),
+    ("^n ^p ^v M-v", "Emacs: down / up, details page down / up"),
+    ("M-< M->  ^g", "Emacs: first / last row, clear the filter"),
     ("/", "Filter the list"),
     ("Esc", "Clear the filter, or quit"),
     ("r", "Scan again"),
@@ -120,6 +122,7 @@ impl App {
             if key.kind != KeyEventKind::Press {
                 continue;
             }
+            let key = emacs(key);
             if self.show_help {
                 // Any key closes the help, except that the quit keys still quit.
                 self.show_help = false;
@@ -143,6 +146,8 @@ impl App {
                     self.filter.clear();
                     self.refilter(self.selected_key());
                 }
+                // Esc quits here, but C-g only ever cancels.
+                KeyCode::Esc if key.modifiers == KeyModifiers::CONTROL => {}
                 KeyCode::Esc => return Ok(()),
                 KeyCode::Down | KeyCode::Char('j') => {
                     self.select(self.table.selected().map_or(0, |i| i + 1))
@@ -570,6 +575,25 @@ fn draw_help(f: &mut Frame, area: Rect) {
     f.render_widget(Paragraph::new(lines).block(block), popup);
 }
 
+/// Emacs's movement keys, as the keys they stand for, so they work
+/// wherever those do: C-n C-p for ↓ ↑, C-v M-v for a page, M-< M-> for the
+/// ends, and C-g for Esc. C-g keeps Control, so it can cancel without quitting.
+fn emacs(key: KeyEvent) -> KeyEvent {
+    let ctrl = key.modifiers == KeyModifiers::CONTROL;
+    let alt = key.modifiers.difference(KeyModifiers::SHIFT) == KeyModifiers::ALT;
+    let code = match key.code {
+        KeyCode::Char('n') if ctrl => KeyCode::Down,
+        KeyCode::Char('p') if ctrl => KeyCode::Up,
+        KeyCode::Char('v') if ctrl => KeyCode::PageDown,
+        KeyCode::Char('v') if alt => KeyCode::PageUp,
+        KeyCode::Char('<') if alt => KeyCode::Home,
+        KeyCode::Char('>') if alt => KeyCode::End,
+        KeyCode::Char('g') if ctrl => return KeyEvent::new(KeyCode::Esc, KeyModifiers::CONTROL),
+        _ => return key,
+    };
+    KeyEvent::new(code, KeyModifiers::NONE)
+}
+
 /// A device's name for the list, falling back to its hostname, then its vendor.
 fn list_name(d: &Device) -> Span<'static> {
     match (&d.name, &d.hostname, d.vendor) {
@@ -845,6 +869,24 @@ fn base64(data: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn emacs_keys_stand_for_the_usual_ones() {
+        let k = |c, m| emacs(KeyEvent::new(KeyCode::Char(c), m)).code;
+        assert_eq!(k('n', KeyModifiers::CONTROL), KeyCode::Down);
+        assert_eq!(k('p', KeyModifiers::CONTROL), KeyCode::Up);
+        assert_eq!(k('v', KeyModifiers::CONTROL), KeyCode::PageDown);
+        assert_eq!(k('v', KeyModifiers::ALT), KeyCode::PageUp);
+        assert_eq!(
+            k('<', KeyModifiers::ALT | KeyModifiers::SHIFT),
+            KeyCode::Home
+        );
+        assert_eq!(k('>', KeyModifiers::ALT), KeyCode::End);
+        assert_eq!(k('g', KeyModifiers::CONTROL), KeyCode::Esc);
+        // Plain letters, and Ctrl-c and Ctrl-d, are left alone.
+        assert_eq!(k('n', KeyModifiers::NONE), KeyCode::Char('n'));
+        assert_eq!(k('d', KeyModifiers::CONTROL), KeyCode::Char('d'));
+    }
 
     #[test]
     fn wrap_breaks_at_spaces_then_mid_word() {

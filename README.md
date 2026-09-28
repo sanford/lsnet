@@ -143,6 +143,8 @@ Run in a terminal, `lsnet` opens the browser shown at the top. Devices are liste
 | `h` or `?` | Show all the keys |
 | `q` or `Ctrl-c` | Quit |
 
+Emacs keys work too: `Ctrl-n` `Ctrl-p` move down and up, `Ctrl-v` `Alt-v` scroll the details like `PgDn` `PgUp`, `Alt-<` `Alt->` jump to the first or last row, and `Ctrl-g` clears the filter (it never quits).
+
 Selecting text with the mouse picks up both panes, so use `c` to copy the details instead. It copies every line, including any scrolled out of view, without wrapping. In narrow terminals the details appear below the list instead of beside it. Copying uses `pbcopy` on macOS, `wl-copy`, `xclip` or `xsel` on Linux, and the clipboard directly on Windows. Without any of those, `lsnet` asks the terminal to do the copy, which also works over SSH in most modern terminals.
 
 ### The services view
