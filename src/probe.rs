@@ -4,11 +4,13 @@
 //! longer list of service ports, and open ports double as a hint about what
 //! the device is.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::io::ErrorKind;
 use std::net::Ipv4Addr;
+use std::sync::OnceLock;
 use std::time::Duration;
 use tokio::net::TcpStream;
+use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 use tokio::time::{Instant, timeout};
 
@@ -31,25 +33,38 @@ const SERVICES: &[u16] = &[
 pub const AWAKE_WAIT: Duration = Duration::from_millis(250);
 
 /// Live hosts and which ports they have open: `LIVENESS` on every target,
-/// then `SERVICES` on each host as soon as it answers.
+/// then `SERVICES` on each host as soon as it answers. Up to a /22 every
+/// check starts at once; beyond that they start as earlier ones finish.
 pub async fn scan(targets: &[Ipv4Addr], wait: Duration) -> HashMap<Ipv4Addr, Vec<u16>> {
     let deadline = Instant::now() + wait;
+    let mut liveness = targets
+        .iter()
+        .flat_map(|&ip| LIVENESS.iter().map(move |&port| (ip, port)));
+    // Live hosts' service ports go ahead of the addresses still unchecked.
+    let mut services: VecDeque<(Ipv4Addr, u16, Duration)> = VecDeque::new();
     let mut set = JoinSet::new();
-    for &ip in targets {
-        for &port in LIVENESS {
-            set.spawn(check(ip, port, wait));
-        }
-    }
     let mut alive: HashMap<Ipv4Addr, Vec<u16>> = HashMap::new();
-    while let Some(Ok((ip, port, open))) = set.join_next().await {
-        let Some(open) = open else { continue };
+    loop {
+        while set.len() < max_in_flight() {
+            if let Some((ip, port, left)) = services.pop_front() {
+                set.spawn(check(ip, port, left));
+            } else if let Some((ip, port)) = liveness.next() {
+                set.spawn(check(ip, port, wait));
+            } else {
+                break;
+            }
+        }
+        let Some(joined) = set.join_next().await else {
+            break;
+        };
+        let Ok((ip, port, Some(open))) = joined else {
+            continue;
+        };
         if !alive.contains_key(&ip) {
             let left = deadline
                 .saturating_duration_since(Instant::now())
                 .max(AWAKE_WAIT);
-            for &port in SERVICES {
-                set.spawn(check(ip, port, left));
-            }
+            services.extend(SERVICES.iter().map(|&port| (ip, port, left)));
         }
         let ports = alive.entry(ip).or_default();
         if open {
@@ -80,8 +95,10 @@ pub async fn all_ports(ip: Ipv4Addr, wait: Duration) -> Vec<u16> {
 }
 
 /// Some(true) if the port is open, Some(false) if refused (the host is
-/// there), None if we heard nothing.
+/// there), None if we heard nothing. The wait starts once there's a socket
+/// to spare.
 async fn check(ip: Ipv4Addr, port: u16, wait: Duration) -> (Ipv4Addr, u16, Option<bool>) {
+    let _permit = sockets().acquire().await.expect("never closed");
     let open = match timeout(wait, connect(ip, port)).await {
         Ok(Ok(_)) => Some(true),
         Ok(Err(e)) if e.kind() == ErrorKind::ConnectionRefused => Some(false),
@@ -103,8 +120,35 @@ async fn connect(ip: Ipv4Addr, port: u16) -> std::io::Result<TcpStream> {
     sock.connect((ip, port).into()).await
 }
 
-/// A /24 sweep opens ~2000 sockets at once; macOS defaults to 256
-/// descriptors. Windows has no such limit.
+/// Connection attempts in flight at once, across every probe.
+fn sockets() -> &'static Semaphore {
+    static SOCKETS: OnceLock<Semaphore> = OnceLock::new();
+    SOCKETS.get_or_init(|| Semaphore::new(max_in_flight()))
+}
+
+/// How many connections to attempt at once: enough for a /22 in one go,
+/// leaving descriptors spare for everything else (web banners, mDNS, SSDP).
+fn max_in_flight() -> usize {
+    static MAX: OnceLock<usize> = OnceLock::new();
+    *MAX.get_or_init(|| {
+        #[cfg(unix)]
+        let limit = unsafe {
+            let mut lim: libc::rlimit = std::mem::zeroed();
+            if libc::getrlimit(libc::RLIMIT_NOFILE, &mut lim) == 0 {
+                lim.rlim_cur as usize
+            } else {
+                256
+            }
+        };
+        #[cfg(windows)]
+        let limit = 10_240;
+        limit.saturating_sub(512).clamp(128, 8_192)
+    })
+}
+
+/// A /24 sweep opens ~2000 sockets at once, and a /22 ~8000; macOS
+/// defaults to 256 descriptors. Windows has no such limit. Call this before
+/// probing, since the probes size themselves to the limit it leaves.
 pub fn raise_fd_limit() {
     #[cfg(unix)]
     unsafe {

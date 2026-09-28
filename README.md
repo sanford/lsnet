@@ -104,6 +104,7 @@ lsnet
 lsnet [OPTIONS]
 
   -i, --interface <NAME>  Network interface to scan (default: the one your internet traffic uses)
+  -n, --net <CIDR>        Network to scan, up to a /16 (default: see "Which network it scans")
   -l, --list              Print a table instead of opening the device browser
   -v, --verbose           Print a table that also shows hostnames, open ports and advertised services
   -s, --services          List the services running on the network instead of devices
@@ -121,6 +122,7 @@ sudo lsnet             # also show MAC addresses and vendors
 lsnet -v               # show the evidence: hostnames, ports, services
 lsnet -s -l            # print every service and its address
 lsnet -t 3000          # wait longer for sleepy Wi-Fi devices
+lsnet --net 10.0.0.0/16 # scan all of a large network, not just your /24
 lsnet --json | jq '.[] | select(.type == "Printer")'
 ```
 
@@ -262,6 +264,36 @@ Empty cells are filled with dimmed dots, so even a row with little information i
 
 `.local` names are shown in full because you can use them directly, even when the device's IP address changes. Try `http://octopi.local` in a browser, or `ssh pi@octopi.local`. Machine-generated names like `36814e2569ca121f.local` are hidden. Run `lsnet --json` to see every name a device reported, including its `.local` hostname under `mdns.hostname`.
 
+### Which network it scans
+
+By default, `lsnet` scans the network of the interface your internet traffic uses. It takes the size from the interface's subnet mask (the `/24` in `192.168.1.0/24`):
+
+| Your network | What `lsnet` scans |
+|---|---|
+| `/22` or smaller (up to 1,022 addresses, including every home `/24`) | The whole network |
+| Larger than `/22` (for example a `/16` on an office or campus network) | Only the `/24` around your own address, so the scan stays at about two seconds |
+
+When it narrows a large network, `lsnet` says so under the results:
+
+```
+10.0.0.0/16 is large; scanned only the local /24 (--net 10.0.0.0/16 scans all of it)
+```
+
+To scan something else, give the network with `--net` (or `-n`) in CIDR form:
+
+```sh
+lsnet --net 10.0.0.0/16        # all of a large network (65,534 addresses)
+lsnet --net 10.0.4.0/22        # just one part of it
+lsnet --net 192.168.1.128/25   # the upper half of your /24
+lsnet --net 192.168.20.0/24    # another subnet, such as a VLAN behind your router
+```
+
+- **Size.** The largest network `--net` takes is a `/16`. Host bits are ignored, so `192.168.1.7/24` means `192.168.1.0/24`. Up to a `/22` takes about two seconds.
+- **Your own network, or part of it.** Everything works as usual: ARP, Bonjour, UPnP, names and MAC addresses.
+- **Larger than a `/22`, on your own network.** Use `sudo` on macOS and Linux (or `setcap`, see [Running without sudo](#running-without-sudo)). `lsnet` then sweeps ARP first and probes only the devices that answer, so a `/16` takes about ten seconds. Without it, every address gets probed: a `/20` takes about five seconds and a `/16` about a minute and a half. On Linux, devices may also go missing, because the kernel tracks only about 1,000 addresses at once (`lsnet` says so under the results). Reverse DNS lookups wait until the devices are found, and Bonjour isn't asked about every address. On Windows, the ARP sweep is replaced by reading the ARP cache after the port probe.
+- **Another network through a router.** Bonjour, UPnP and ARP don't cross routers, so `lsnet` finds devices only by their open ports, and shows no MAC addresses and fewer names. It says so under the results. Devices behind a firewall that drops these probes won't show up.
+- **Which interface.** Without `-i`, `lsnet` uses the interface on the network you gave, if there is one, and otherwise the one your internet traffic uses.
+
 ## How it works
 
 `lsnet` runs these at the same time:
@@ -314,7 +346,7 @@ In `--json`, each device includes:
 
 ## Limitations
 
-- **IPv4 only.** Networks larger than /22 are narrowed to your local /24 to keep scans fast.
+- **IPv4 only.** Networks larger than /22 are narrowed to your local /24 to keep scans fast, unless you ask for more with `--net` (see [Which network it scans](#which-network-it-scans)).
 - **Identification is heuristic.** Devices that announce nothing and have no open ports show up with no type. Running with `sudo` at least adds their vendor, in the NAME/VENDOR column.
 - **The Linux ARP cache can be stale.** Entries for devices that just left the network can linger for a few seconds after they disconnect.
 - **Sleepy devices can be missed.** Phones and IoT devices in Wi-Fi power-save mode may not answer within the default window. Use `-t` to wait longer.

@@ -35,6 +35,11 @@ struct Args {
     #[arg(short, long, short_alias = 'I')]
     interface: Option<String>,
 
+    /// Network to scan, in CIDR form (default: the interface's own, or the
+    /// /24 around this machine if that's larger than a /22). At most a /16
+    #[arg(short, long, value_name = "CIDR", value_parser = iface::parse_net)]
+    net: Option<ipnetwork::Ipv4Network>,
+
     /// Print a table instead of opening the device browser (the default
     /// when output isn't a terminal)
     #[arg(short, long)]
@@ -213,8 +218,15 @@ pub struct Scan {
 
 fn scan(args: &Args) -> Result<Scan, String> {
     let start = Instant::now();
-    let ifc = iface::detect(args.interface.as_deref())?;
+    let ifc = iface::detect(args.interface.as_deref(), args.net)?;
     let targets = ifc.targets();
+    // ARP and mDNS reverse lookups only reach this machine's own link.
+    let link_targets: Vec<Ipv4Addr> = targets
+        .iter()
+        .copied()
+        .filter(|ip| ifc.link.contains(*ip))
+        .collect();
+    let small = targets.len() <= ALL_AT_ONCE;
     let wait = Duration::from_millis(args.timeout);
     // Extra time for follow-up requests (UPnP descriptions, web banners).
     let grace = Duration::from_millis(800);
@@ -222,15 +234,30 @@ fn scan(args: &Args) -> Result<Scan, String> {
     probe::raise_fd_limit();
     let rt = tokio::runtime::Runtime::new().map_err(|e| format!("can't start runtime: {e}"))?;
 
+    // On a large network, sweep ARP first when we can, so the port probe
+    // and ping only need the hosts that answered. Probing every address
+    // makes the kernel look each one up, and past about 1,000 Linux's ARP
+    // table overflows and hosts go missing. It's much faster, too.
+    let early_arp =
+        (!small && !link_targets.is_empty()).then(|| arp::sweep(&ifc, &link_targets, wait));
+    let probe_targets: Vec<Ipv4Addr> = match &early_arp {
+        Some(Ok(found)) => targets
+            .iter()
+            .copied()
+            .filter(|ip| !ifc.link.contains(*ip) || found.contains_key(ip))
+            .collect(),
+        _ => targets.clone(),
+    };
+
     // Phase 1: every discovery method at once. The ARP sweep is blocking, so
     // it gets its own thread while the async probes share the runtime.
-    let (arp_result, pinged, names, (open_ports, mdns, ssdp)) = thread::scope(|s| {
-        let arp = s.spawn(|| arp::sweep(&ifc, &targets, wait));
-        let pinged = s.spawn(|| ping::sweep(&targets, wait));
+    let (arp_result, pinged, mut names, (open_ports, mdns, ssdp)) = thread::scope(|s| {
+        let arp = s.spawn(|| early_arp.unwrap_or_else(|| arp::sweep(&ifc, &link_targets, wait)));
+        let pinged = s.spawn(|| ping::sweep(&probe_targets, wait));
         // Reverse DNS is slow per lookup but cheap in parallel, so start it for
         // every address now instead of waiting to learn which ones are alive.
         let names = s.spawn(|| {
-            if args.no_dns {
+            if args.no_dns || !small {
                 return HashMap::new();
             }
             let mut ips = targets.clone();
@@ -239,8 +266,8 @@ fn scan(args: &Args) -> Result<Scan, String> {
         });
         let rest = rt.block_on(async {
             tokio::join!(
-                probe::scan(&targets, wait),
-                mdns::discover(ifc.ip, &targets, wait),
+                probe::scan(&probe_targets, wait),
+                mdns::discover(ifc.ip, if small { &link_targets } else { &[] }, wait),
                 ssdp::discover(ifc.ip, ifc.net, &ifc.own_ips, wait, grace),
             )
         });
@@ -253,16 +280,28 @@ fn scan(args: &Args) -> Result<Scan, String> {
     });
     let (arp_found, privileged) = match arp_result {
         Ok(found) => (found, true),
-        Err(e) if e.kind() == ErrorKind::PermissionDenied => (arp::read_cache(&ifc), false),
+        Err(e)
+            if matches!(
+                e.kind(),
+                ErrorKind::PermissionDenied | ErrorKind::Unsupported
+            ) =>
+        {
+            (arp::read_cache(&ifc), false)
+        }
         Err(e) => return Err(format!("ARP sweep on {} failed: {e}", ifc.iface.name)),
     };
 
     let mut hosts: BTreeMap<Ipv4Addr, Device> = BTreeMap::new();
-    let on_lan = |ip: &Ipv4Addr| ifc.net.contains(*ip) || ifc.own_ips.contains(ip);
+    // This machine's other addresses count too (it may be on Wi-Fi and
+    // Ethernet at once), unless the user named the network to scan.
+    let on_lan =
+        |ip: &Ipv4Addr| ifc.net.contains(*ip) || (args.net.is_none() && ifc.own_ips.contains(ip));
     fn host(hosts: &mut BTreeMap<Ipv4Addr, Device>, ip: Ipv4Addr) -> &mut Device {
         hosts.entry(ip).or_insert_with(|| Device::new(ip))
     }
-    host(&mut hosts, ifc.ip).mac = ifc.mac.map(|m| m.to_string());
+    if ifc.net.contains(ifc.ip) {
+        host(&mut hosts, ifc.ip).mac = ifc.mac.map(|m| m.to_string());
+    }
     for (ip, mac) in arp_found {
         host(&mut hosts, ip).mac = Some(mac.to_string());
     }
@@ -300,6 +339,14 @@ fn scan(args: &Args) -> Result<Scan, String> {
             (needs_ports || d.open_ports.contains(&80)).then_some((d.ip, needs_ports))
         })
         .collect();
+    // Too many addresses to look them all up in advance, so look up just
+    // the devices found, alongside phase 2.
+    let late: Vec<Ipv4Addr> = if args.no_dns || small {
+        Vec::new()
+    } else {
+        devices.iter().map(|d| d.ip).collect()
+    };
+    let late_names = thread::spawn(move || hostnames(late, wait));
     let followed = rt.block_on(async {
         let mut set = JoinSet::new();
         for (ip, needs_ports) in follow_up {
@@ -329,6 +376,7 @@ fn scan(args: &Args) -> Result<Scan, String> {
         }
         out
     });
+    names.extend(late_names.join().expect("dns thread"));
     for d in &mut devices {
         if let Some((ports, banner)) = followed.get(&d.ip) {
             if let Some(p) = ports {
@@ -349,12 +397,27 @@ fn scan(args: &Args) -> Result<Scan, String> {
     );
     let mut notes = Vec::new();
     if let Some(full) = ifc.narrowed_from {
-        notes.push(format!("{full} is large; scanned only the local /24"));
+        notes.push(if full.prefix() >= iface::MAX_NET_PREFIX {
+            format!("{full} is large; scanned only the local /24 (--net {full} scans all of it)")
+        } else {
+            format!("{full} is large; scanned only the local /24 (--net scans up to a /16 of it)")
+        });
+    }
+    if cfg!(target_os = "linux") && !privileged && link_targets.len() > ALL_AT_ONCE {
+        notes.push(
+            "without root, Linux tracks only about 1,000 addresses at once, so devices may be missing; run with sudo to see them all".into(),
+        );
+    }
+    if !ifc.on_link() {
+        notes.push(format!(
+            "{} isn't on {}'s network ({}), so devices were found by their open ports alone, without names from mDNS or UPnP",
+            ifc.net, ifc.iface.name, ifc.link
+        ));
     }
     // Where the OS shares its ARP cache (Linux), unprivileged scans already
     // see MACs and quiet devices, so the tip only matters when it doesn't.
     let have_macs = devices.iter().any(|d| d.mac.is_some() && !d.this_device);
-    if !privileged && !have_macs {
+    if !privileged && !have_macs && ifc.on_link() {
         notes.push("tip: run with sudo to see MAC addresses and vendors, and find devices that ignore pings".into());
     }
     Ok(Scan {
@@ -366,6 +429,10 @@ fn scan(args: &Args) -> Result<Scan, String> {
 
 /// Reverse lookups (which on macOS also ask mDNS for `.local` names), in
 /// parallel, giving up on stragglers at the deadline.
+/// Up to this many addresses (a /22), every one gets a reverse DNS and mDNS
+/// lookup up front, before we know which are in use.
+const ALL_AT_ONCE: usize = 1024;
+
 fn hostnames(ips: Vec<Ipv4Addr>, deadline: Duration) -> HashMap<Ipv4Addr, String> {
     let (tx, rx) = mpsc::channel();
     let n = ips.len();

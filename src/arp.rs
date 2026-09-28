@@ -110,11 +110,19 @@ pub fn sweep(ifc: &Iface, targets: &[Ipv4Addr], wait: Duration) -> io::Result<Fo
 /// Active ARP sweep through `SendARP`, which needs no privileges. Each
 /// request blocks until the address answers or Windows gives up, which takes
 /// seconds for an empty address, so every address gets its own thread and
-/// we stop listening at the deadline.
+/// we stop listening at the deadline. That's too many threads past a /22, so
+/// larger sweeps fail with Unsupported and fall back to the ARP cache.
 #[cfg(windows)]
 pub fn sweep(ifc: &Iface, targets: &[Ipv4Addr], wait: Duration) -> io::Result<Found> {
     use std::sync::mpsc;
     use std::time::Instant;
+
+    if targets.len() > 1024 {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "too many addresses for SendARP",
+        ));
+    }
 
     let deadline = Instant::now() + wait;
     let (tx, rx) = mpsc::channel();
