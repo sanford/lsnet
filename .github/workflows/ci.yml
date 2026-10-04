@@ -8,6 +8,11 @@ name: CI
 on:
   push:
   workflow_dispatch:
+    inputs:
+      github_hosted:
+        description: Run on a GitHub-hosted runner, for when ours is offline
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -28,18 +33,24 @@ jobs:
   windows:
     needs: approve
     if: ${{ !cancelled() && (needs.approve.result == 'success' || needs.approve.result == 'skipped') }}
-    runs-on: [self-hosted, Windows, X64]
-    # The toolchain is installed machine-wide, in the folder named by the
+    # A manual run can ask for a GitHub-hosted runner instead, which comes
+    # with rustup.
+    runs-on: ${{ inputs.github_hosted && 'windows-latest' || fromJSON('["self-hosted", "Windows", "X64"]') }}
+    # Our toolchain is installed machine-wide, in the folder named by the
     # RUST_DIR secret (a secret so the logs don't show the machine's layout),
-    # so the runner service needs no environment of its own.
+    # so the runner service needs no environment of its own. Empty, the
+    # variables are ignored.
     env:
-      RUSTUP_HOME: ${{ secrets.RUST_DIR }}\rustup
-      CARGO_HOME: ${{ secrets.RUST_DIR }}\cargo
+      RUSTUP_HOME: ${{ !inputs.github_hosted && format('{0}\rustup', secrets.RUST_DIR) || '' }}
+      CARGO_HOME: ${{ !inputs.github_hosted && format('{0}\cargo', secrets.RUST_DIR) || '' }}
     defaults:
       run:
         shell: pwsh
     steps:
-      - run: Add-Content $env:GITHUB_PATH "$env:CARGO_HOME\bin"
+      - if: ${{ !inputs.github_hosted }}
+        run: Add-Content $env:GITHUB_PATH "$env:CARGO_HOME\bin"
+      - if: ${{ inputs.github_hosted }}
+        run: rustup update stable --no-self-update
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5
       - run: cargo test --locked --release
       - run: cargo clippy --locked --release --all-targets -- -D warnings
