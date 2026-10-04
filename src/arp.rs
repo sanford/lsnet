@@ -2,9 +2,9 @@
 //!
 //! With raw-socket access (root; CAP_NET_RAW on Linux; BPF access on macOS) we broadcast ARP requests
 //! ourselves and listen for replies: fast, finds devices that ignore every
-//! port, and gives us MAC addresses. Without it we can only read the
-//! kernel's ARP cache. Windows sends ARP requests for anyone who asks, so
-//! there the sweep never needs privileges.
+//! port, and gives us MAC addresses. Either way we also read the kernel's
+//! ARP cache, which is all we have without it. Windows sends ARP requests
+//! for anyone who asks, so there the sweep never needs privileges.
 
 use crate::iface::Iface;
 use crate::platform;
@@ -38,8 +38,13 @@ pub fn sweep(ifc: &Iface, targets: &[Ipv4Addr], wait: Duration) -> io::Result<Fo
         .into_iter()
         .find(|i| i.name == ifc.iface.name)
         .ok_or_else(|| io::Error::other(format!("{} disappeared", ifc.iface.name)))?;
+    // pnet's default 4 KB capture buffer holds about 50 frames. We see our
+    // own broadcasts as well as every other frame on the link, so on a busy
+    // network a sweep of a /22 overflows it and replies are dropped. 256 KB
+    // is within macOS's BPF limit (512 KB).
     let cfg = Config {
         read_timeout: Some(Duration::from_millis(50)),
+        read_buffer_size: 256 * 1024,
         ..Default::default()
     };
     // pnet walks /dev/bpf0..N and reports whatever the last failure was
@@ -171,7 +176,8 @@ fn arp_request(src_mac: MacAddr, src_ip: Ipv4Addr, target: Ipv4Addr) -> [u8; 42]
 }
 
 /// Whatever the kernel's ARP cache knows about this network. Linux shares
-/// it freely; recent macOS returns nothing unless the binary is Apple-signed.
+/// it freely; recent macOS returns nothing to a binary that isn't signed
+/// with a Developer ID, even through `arp`.
 pub fn read_cache(ifc: &Iface) -> Found {
     platform::arp_cache(&ifc.iface)
         .into_iter()

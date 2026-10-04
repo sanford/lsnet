@@ -2,6 +2,7 @@ mod arp;
 mod classify;
 mod http;
 mod iface;
+mod kasa;
 mod mdns;
 mod oui;
 mod ping;
@@ -13,6 +14,7 @@ mod tui;
 
 use clap::Parser;
 use comfy_table::{Attribute, Cell, Color, ContentArrangement, Table, presets};
+use kasa::KasaInfo;
 use mdns::MdnsInfo;
 use owo_colors::{OwoColorize, Stream::Stderr};
 use pnet_base::MacAddr;
@@ -86,6 +88,8 @@ pub struct Device {
     #[serde(skip_serializing_if = "Option::is_none")]
     ssdp: Option<SsdpInfo>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    kasa: Option<KasaInfo>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     http: Option<http::Banner>,
 }
 
@@ -105,6 +109,7 @@ impl Device {
             this_device: false,
             mdns: None,
             ssdp: None,
+            kasa: None,
             http: None,
         }
     }
@@ -251,7 +256,7 @@ fn scan(args: &Args) -> Result<Scan, String> {
 
     // Phase 1: every discovery method at once. The ARP sweep is blocking, so
     // it gets its own thread while the async probes share the runtime.
-    let (arp_result, pinged, mut names, (open_ports, mdns, ssdp)) = thread::scope(|s| {
+    let (arp_result, pinged, mut names, (open_ports, mdns, ssdp, kasa)) = thread::scope(|s| {
         let arp = s.spawn(|| early_arp.unwrap_or_else(|| arp::sweep(&ifc, &link_targets, wait)));
         let pinged = s.spawn(|| ping::sweep(&probe_targets, wait));
         // Reverse DNS is slow per lookup but cheap in parallel, so start it for
@@ -269,6 +274,7 @@ fn scan(args: &Args) -> Result<Scan, String> {
                 probe::scan(&probe_targets, wait),
                 mdns::discover(ifc.ip, if small { &link_targets } else { &[] }, wait),
                 ssdp::discover(ifc.ip, ifc.net, &ifc.own_ips, wait, grace),
+                kasa::discover(ifc.ip, ifc.net, wait),
             )
         });
         (
@@ -278,7 +284,7 @@ fn scan(args: &Args) -> Result<Scan, String> {
             rest,
         )
     });
-    let (arp_found, privileged) = match arp_result {
+    let (mut arp_found, privileged) = match arp_result {
         Ok(found) => (found, true),
         Err(e)
             if matches!(
@@ -286,10 +292,17 @@ fn scan(args: &Args) -> Result<Scan, String> {
                 ErrorKind::PermissionDenied | ErrorKind::Unsupported
             ) =>
         {
-            (arp::read_cache(&ifc), false)
+            (arp::Found::new(), false)
         }
         Err(e) => return Err(format!("ARP sweep on {} failed: {e}", ifc.iface.name)),
     };
+    // The kernel's cache fills in hosts the sweep missed (asleep through
+    // both rounds) or couldn't send at all: the probes above made the kernel
+    // resolve every address that answered them, and any that ignored them
+    // but talked to us lately.
+    for (ip, mac) in arp::read_cache(&ifc) {
+        arp_found.entry(ip).or_insert(mac);
+    }
 
     let mut hosts: BTreeMap<Ipv4Addr, Device> = BTreeMap::new();
     // This machine's other addresses count too (it may be on Wi-Fi and
@@ -318,6 +331,9 @@ fn scan(args: &Args) -> Result<Scan, String> {
     }
     for (ip, info) in ssdp.into_iter().filter(|(ip, _)| on_lan(ip)) {
         host(&mut hosts, ip).ssdp = Some(info);
+    }
+    for (ip, info) in kasa.into_iter().filter(|(ip, _)| on_lan(ip)) {
+        host(&mut hosts, ip).kasa = Some(info);
     }
 
     let mut devices: Vec<Device> = hosts.into_values().collect();

@@ -19,6 +19,7 @@ type Id = (&'static str, Option<String>);
 
 fn identify(d: &Device) -> Option<Id> {
     from_mdns(d)
+        .or_else(|| from_kasa(d))
         .or_else(|| from_ssdp(d))
         .or_else(|| from_names(d))
         .or_else(|| from_http(d))
@@ -93,6 +94,26 @@ fn from_mdns(d: &Device) -> Option<Id> {
     }
 
     None
+}
+
+fn from_kasa(d: &Device) -> Option<Id> {
+    let k = d.kasa.as_ref()?;
+    let device_type = k.device_type.as_deref().unwrap_or("").to_ascii_lowercase();
+    let description = k.description.as_deref().unwrap_or("").to_ascii_lowercase();
+    let kind = if device_type.contains("bulb") || description.contains("bulb") {
+        "Smart light"
+    } else if description.contains("switch") || description.contains("dimmer") {
+        "Light switch"
+    } else {
+        "Smart plug"
+    };
+    // "HS105(US)" → "HS105".
+    let model = k.model.as_deref().map(|m| {
+        let m =
+            kasa_model(m).unwrap_or_else(|| m.split('(').next().unwrap_or(m).trim().to_string());
+        format!("TP-Link Kasa {m}")
+    });
+    Some((kind, model))
 }
 
 fn from_ssdp(d: &Device) -> Option<Id> {
@@ -460,6 +481,10 @@ fn from_vendor(d: &Device) -> Option<Id> {
     let kind = match () {
         _ if lower.contains("raspberry") => "Computer",
         _ if lower.contains("espressif") || lower.contains("tuya") => "IoT device",
+        _ if lower.contains("chamberlain") => "Garage door",
+        // TP-Link makes routers too, but those listen on ports. Silent ones
+        // are smart plugs and switches with newer firmware.
+        _ if lower.contains("tp-link") && d.open_ports.is_empty() => "Smart plug",
         _ if lower.contains("sonos") => "Speaker",
         _ if lower.contains("roku") => "TV / streamer",
         _ if lower.contains("nintendo") || lower.contains("sony interactive") => "Game console",
@@ -509,8 +534,10 @@ fn name(d: &Device) -> Option<String> {
         .and_then(|m| m.hostname.clone())
         .filter(|h| h.ends_with(".local") && !is_junk_name(h));
     let cast = m.and_then(|m| m.txt.get("googlecast")?.get("fn").cloned());
-    let personal =
-        cast.or_else(|| service(&["device-info", "airplay", "companion-link", "raop", "hap"]));
+    let kasa = d.kasa.as_ref().and_then(|k| k.alias.clone());
+    let personal = cast
+        .or(kasa)
+        .or_else(|| service(&["device-info", "airplay", "companion-link", "raop", "hap"]));
     let dns = d.hostname.as_ref().map(|h| {
         if h.ends_with(".local") {
             h.clone()
@@ -709,6 +736,32 @@ mod tests {
         assert_eq!(kasa_model("kl420").as_deref(), Some("KL420"));
         assert_eq!(kasa_model("hsbc"), None);
         assert_eq!(kasa_model("epson"), None);
+    }
+
+    #[test]
+    fn kasa_sysinfo() {
+        let mut d = device(&[], Some("TP-Link"));
+        d.kasa = serde_json::from_str(
+            r#"{"alias":"Living Room Lamp","model":"HS105(US)",
+                "dev_name":"Smart Wi-Fi Plug Mini","type":"IOT.SMARTPLUGSWITCH"}"#,
+        )
+        .ok();
+        assert_eq!(
+            identify(&d),
+            Some(("Smart plug", Some("TP-Link Kasa HS105".into())))
+        );
+        assert_eq!(name(&d).as_deref(), Some("Living Room Lamp"));
+    }
+
+    #[test]
+    fn silent_vendors() {
+        let id = |ports: &[u16], vendor| identify(&device(ports, Some(vendor))).map(|id| id.0);
+        assert_eq!(
+            id(&[80], "The Chamberlain Group, Inc."),
+            Some("Garage door")
+        );
+        assert_eq!(id(&[], "TP-Link"), Some("Smart plug"));
+        assert_ne!(id(&[80, 443], "TP-Link"), Some("Smart plug"));
     }
 
     fn device(ports: &[u16], vendor: Option<&'static str>) -> Device {

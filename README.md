@@ -308,13 +308,14 @@ lsnet --net 192.168.20.0/24    # another subnet, such as a VLAN behind your rout
 | Source | What it finds | Needs root |
 |---|---|---|
 | **ARP sweep** | Every device that has an IP address, including ones with no open ports, plus its MAC address | yes (or `CAP_NET_RAW` on Linux); no on Windows |
-| **ARP cache** | MAC addresses the kernel learned during the scan | no (Linux only) |
+| **ARP cache** | MAC addresses the kernel learned during the scan, including devices the sweep missed | no on Linux and Windows; on macOS, root or a Developer ID–signed binary |
 | **TCP probe** | Live hosts, since even a refused connection proves a device is there. Every host that answers is then checked for common server and homelab ports (databases, Proxmox, Home Assistant, Plex, Jellyfin, RDP) | no |
 | **Ping** | Devices that ignore every TCP port but still answer ICMP echo (macOS; on Linux and Windows ARP already covers them) | no |
 | **mDNS / Bonjour** | Friendly names ("Living Room") and model identifiers from TXT records (`AppleTV14,1`, Chromecast `md=`, printer `ty=`, HomeKit categories), plus each device's primary `.local` name from a reverse lookup of its address | no |
 | **SSDP / UPnP** | Manufacturer, model and name from each device's UPnP description, which is how routers, TVs and NASes usually identify themselves | no |
 | **Reverse DNS** | Hostnames from your router's DHCP leases | no |
 | **HTTP banner** | `Server` header and page `<title>` from web UIs | no |
+| **TP-Link Kasa** | The names plugs, switches and bulbs were given in the Kasa app, and their models, from a UDP broadcast | no |
 
 Then it classifies each device using the most specific evidence available: what the device says about its own model, then naming conventions, then web banners, then advertised services, then open ports, then the MAC vendor. The vendor database comes from the IEEE registry and is built into the binary, so no network lookups are needed.
 
@@ -323,7 +324,7 @@ Then it classifies each device using the most specific evidence available: what 
 Without root, `lsnet` can't send its own ARP packets on macOS or Linux. It finds devices with the TCP probe and the discovery protocols instead, and how much else you get depends on the OS:
 
 - **Linux:** almost nothing is lost. The TCP probe makes the kernel look up the MAC of every live address, and `lsnet` reads the results from `/proc/net/arp`. That gives MACs and vendors, and even finds devices with no open ports.
-- **macOS:** recent versions don't let binaries that aren't Apple-signed read the ARP table or MAC addresses. Without `sudo`, the VENDOR and MAC columns are hidden, devices are identified from what they announce, and devices that are silent, fully firewalled and ignore pings are missed.
+- **macOS:** recent versions don't let binaries that aren't signed with a Developer ID read the ARP table or MAC addresses, even through `arp`. Without `sudo`, the VENDOR and MAC columns are hidden, devices are identified from what they announce, and devices that are silent, fully firewalled and ignore pings are missed.
 - **Windows:** nothing is lost, and there's no need to run as administrator. Windows sends ARP requests on anyone's behalf, so the full ARP sweep always runs.
 
 On Linux, you can give the binary raw-socket access once instead of using `sudo` every time:

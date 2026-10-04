@@ -744,6 +744,14 @@ fn details(d: &Device, cols: u16) -> Vec<Line<'static>> {
         field(&mut out, "Server", s.server.clone());
     }
 
+    if let Some(k) = &d.kasa {
+        section(&mut out, "TP-Link Kasa");
+        field(&mut out, "Name", k.alias.clone());
+        field(&mut out, "Model", k.model.clone());
+        field(&mut out, "Description", k.description.clone());
+        field(&mut out, "Device type", k.device_type.clone());
+    }
+
     if let Some(h) = &d.http {
         section(&mut out, "Web (port 80)");
         field(&mut out, "Title", h.title.clone());
