@@ -4,6 +4,7 @@ mod http;
 mod iface;
 mod kasa;
 mod mdns;
+mod netbios;
 mod oui;
 mod ping;
 mod platform;
@@ -16,6 +17,7 @@ use clap::Parser;
 use comfy_table::{Attribute, Cell, Color, ContentArrangement, Table, presets};
 use kasa::KasaInfo;
 use mdns::MdnsInfo;
+use netbios::NetbiosInfo;
 use owo_colors::{OwoColorize, Stream::Stderr};
 use pnet_base::MacAddr;
 use serde::Serialize;
@@ -90,6 +92,8 @@ pub struct Device {
     #[serde(skip_serializing_if = "Option::is_none")]
     kasa: Option<KasaInfo>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    netbios: Option<NetbiosInfo>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     http: Option<http::Banner>,
 }
 
@@ -110,6 +114,7 @@ impl Device {
             mdns: None,
             ssdp: None,
             kasa: None,
+            netbios: None,
             http: None,
         }
     }
@@ -338,15 +343,17 @@ fn scan(args: &Args) -> Result<Scan, String> {
 
     let mut devices: Vec<Device> = hosts.into_values().collect();
     for d in &mut devices {
-        let mac: Option<MacAddr> = d.mac.as_deref().and_then(|m| m.parse().ok());
-        d.vendor = mac.and_then(oui::vendor);
-        d.randomized_mac = mac.is_some_and(oui::is_randomized);
         d.gateway = Some(d.ip) == ifc.gateway;
         d.this_device = ifc.own_ips.contains(&d.ip);
     }
+    // Whether ARP (or the OS's cache) gave us MACs, before NetBIOS and
+    // Bonjour names fill in some of the rest.
+    let have_macs = devices.iter().any(|d| d.mac.is_some() && !d.this_device);
 
     // Phase 2: ports for hosts found only some other way, then web banners
-    // for everything serving HTTP.
+    // for everything serving HTTP. Alongside, every live host is asked for
+    // its NetBIOS name, and those that stayed quiet to the UPnP and Kasa
+    // broadcasts are asked directly.
     let follow_up: Vec<(Ipv4Addr, bool)> = devices
         .iter()
         .filter(|d| !d.this_device)
@@ -355,6 +362,16 @@ fn scan(args: &Args) -> Result<Scan, String> {
             (needs_ports || d.open_ports.contains(&80)).then_some((d.ip, needs_ports))
         })
         .collect();
+    let others = |missing: fn(&Device) -> bool| -> Vec<Ipv4Addr> {
+        devices
+            .iter()
+            .filter(|d| !d.this_device && missing(d))
+            .map(|d| d.ip)
+            .collect()
+    };
+    let netbios_targets = others(|_| true);
+    let ssdp_targets = others(|d| d.ssdp.is_none());
+    let kasa_targets = others(|d| d.kasa.is_none());
     // Too many addresses to look them all up in advance, so look up just
     // the devices found, alongside phase 2.
     let late: Vec<Ipv4Addr> = if args.no_dns || small {
@@ -363,34 +380,42 @@ fn scan(args: &Args) -> Result<Scan, String> {
         devices.iter().map(|d| d.ip).collect()
     };
     let late_names = thread::spawn(move || hostnames(late, wait));
-    let followed = rt.block_on(async {
-        let mut set = JoinSet::new();
-        for (ip, needs_ports) in follow_up {
-            set.spawn(async move {
-                let (ports, web_wait) = if needs_ports {
-                    (
-                        Some(probe::all_ports(ip, probe::AWAKE_WAIT).await),
-                        grace - probe::AWAKE_WAIT,
-                    )
-                } else {
-                    (None, grace)
-                };
-                let web = ports.as_ref().is_none_or(|p| p.contains(&80));
-                let banner = if web {
-                    http::banner(ip, 80, web_wait).await
-                } else {
-                    None
-                };
-                (ip, ports, banner)
-            });
-        }
-        let mut out = HashMap::new();
-        while let Some(joined) = set.join_next().await {
-            if let Ok((ip, ports, banner)) = joined {
-                out.insert(ip, (ports, banner));
+    let (followed, netbios, late_ssdp, late_kasa) = rt.block_on(async {
+        let followed = async {
+            let mut set = JoinSet::new();
+            for (ip, needs_ports) in follow_up {
+                set.spawn(async move {
+                    let (ports, web_wait) = if needs_ports {
+                        (
+                            Some(probe::all_ports(ip, probe::AWAKE_WAIT).await),
+                            grace - probe::AWAKE_WAIT,
+                        )
+                    } else {
+                        (None, grace)
+                    };
+                    let web = ports.as_ref().is_none_or(|p| p.contains(&80));
+                    let banner = if web {
+                        http::banner(ip, 80, web_wait).await
+                    } else {
+                        None
+                    };
+                    (ip, ports, banner)
+                });
             }
-        }
-        out
+            let mut out = HashMap::new();
+            while let Some(joined) = set.join_next().await {
+                if let Ok((ip, ports, banner)) = joined {
+                    out.insert(ip, (ports, banner));
+                }
+            }
+            out
+        };
+        tokio::join!(
+            followed,
+            netbios::query(ifc.ip, &netbios_targets, grace),
+            ssdp::query(ifc.ip, ifc.net, &ifc.own_ips, &ssdp_targets, grace),
+            kasa::query(ifc.ip, ifc.net, &kasa_targets, grace),
+        )
     });
     names.extend(late_names.join().expect("dns thread"));
     for d in &mut devices {
@@ -400,6 +425,25 @@ fn scan(args: &Args) -> Result<Scan, String> {
             }
             d.http = banner.clone();
         }
+        if d.ssdp.is_none() {
+            d.ssdp = late_ssdp.get(&d.ip).cloned();
+        }
+        if d.kasa.is_none() {
+            d.kasa = late_kasa.get(&d.ip).cloned();
+        }
+        d.netbios = netbios.get(&d.ip).cloned();
+        // Without ARP, Windows and Samba hosts report their MAC over
+        // NetBIOS, and some Bonjour names carry one.
+        if d.mac.is_none() {
+            d.mac = d
+                .netbios
+                .as_ref()
+                .and_then(|n| n.mac.clone())
+                .or_else(|| d.mdns.as_ref().and_then(|m| m.mac.clone()));
+        }
+        let mac: Option<MacAddr> = d.mac.as_deref().and_then(|m| m.parse().ok());
+        d.vendor = mac.and_then(oui::vendor);
+        d.randomized_mac = mac.is_some_and(oui::is_randomized);
         d.hostname = names.get(&d.ip).cloned();
         classify::classify(d);
     }
@@ -432,7 +476,6 @@ fn scan(args: &Args) -> Result<Scan, String> {
     }
     // Where the OS shares its ARP cache (Linux), unprivileged scans already
     // see MACs and quiet devices, so the tip only matters when it doesn't.
-    let have_macs = devices.iter().any(|d| d.mac.is_some() && !d.this_device);
     if !privileged && !have_macs && ifc.on_link() {
         notes.push("tip: run with sudo to see MAC addresses and vendors, and find devices that ignore pings".into());
     }

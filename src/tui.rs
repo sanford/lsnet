@@ -752,6 +752,12 @@ fn details(d: &Device, cols: u16) -> Vec<Line<'static>> {
         field(&mut out, "Device type", k.device_type.clone());
     }
 
+    if let Some(n) = &d.netbios {
+        section(&mut out, "NetBIOS");
+        field(&mut out, "Name", Some(n.name.clone()));
+        field(&mut out, "MAC", n.mac.clone());
+    }
+
     if let Some(h) = &d.http {
         section(&mut out, "Web (port 80)");
         field(&mut out, "Title", h.title.clone());

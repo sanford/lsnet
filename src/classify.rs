@@ -160,6 +160,7 @@ fn all_names(d: &Device) -> Vec<String> {
     let mut names: Vec<String> = [
         d.hostname.as_deref(),
         d.mdns.as_ref().and_then(|m| m.hostname.as_deref()),
+        d.netbios.as_ref().map(|n| n.name.as_str()),
         d.name.as_deref(),
     ]
     .into_iter()
@@ -371,6 +372,28 @@ fn from_http(d: &Device) -> Option<Id> {
 fn from_services(d: &Device) -> Option<Id> {
     let m = d.mdns.as_ref()?;
     let has = |s: &str| m.services.contains_key(s);
+    // Services only one kind of device or app advertises.
+    if has("plexmediasvr") {
+        return Some(("Media server", Some("Plex".into())));
+    }
+    if has("mediaremotetv") {
+        return Some(("TV / streamer", Some("Apple TV".into())));
+    }
+    if has("viziocast") {
+        return Some(("TV / streamer", Some("Vizio".into())));
+    }
+    if has("nanoleafapi") {
+        return Some(("Smart light", Some("Nanoleaf".into())));
+    }
+    if has("elg") {
+        return Some(("Smart light", Some("Elgato".into())));
+    }
+    if has("scanner") {
+        return Some(("Printer", None));
+    }
+    if has("miio") {
+        return Some(("Smart home", Some("Xiaomi".into())));
+    }
     if has("adisk") || has("nut") {
         return Some(("NAS", None));
     }
@@ -386,10 +409,10 @@ fn from_services(d: &Device) -> Option<Id> {
     if has("androidtvremote2") || has("amzn-wplay") || has("nvstream") {
         return Some(("TV / streamer", None));
     }
-    if has("matter") || has("hap") || has("hue") || has("esphomelib") {
+    if has("matter") || has("matterc") || has("hap") || has("hue") || has("esphomelib") {
         return Some(("Smart home", None));
     }
-    if has("workstation") || has("ssh") || has("sftp-ssh") {
+    if has("workstation") || has("ssh") || has("sftp-ssh") || has("daap") {
         return Some(("Computer", None));
     }
     None
@@ -511,10 +534,11 @@ fn from_vendor(d: &Device) -> Option<Id> {
 
 /// The friendliest name the device gives itself.
 ///
-/// Names people set themselves (AirPlay, HomeKit, Cast) come first. Next is
+/// Names people set themselves (AirPlay, HomeKit, Cast, Fire TV) come first. Next is
 /// the device's primary `.local` name, kept whole so it can be pasted into a
 /// browser or ssh, which beats generic service labels like Home Assistant's
-/// "Home" or a file share's name. Router DNS names are shortened to the host.
+/// "Home" or a file share's name. A Windows or Samba computer name comes
+/// after UPnP's. Router DNS names are shortened to the host.
 fn name(d: &Device) -> Option<String> {
     let m = d.mdns.as_ref();
     let service = |services: &[&str]| -> Option<String> {
@@ -533,10 +557,12 @@ fn name(d: &Device) -> Option<String> {
     let local = m
         .and_then(|m| m.hostname.clone())
         .filter(|h| h.ends_with(".local") && !is_junk_name(h));
-    let cast = m.and_then(|m| m.txt.get("googlecast")?.get("fn").cloned());
+    let txt = |svc: &str, key: &str| m.and_then(|m| m.txt.get(svc)?.get(key).cloned());
     let kasa = d.kasa.as_ref().and_then(|k| k.alias.clone());
-    let personal = cast
+    // Cast and Fire TV keep the name their owner gave them in TXT records.
+    let personal = txt("googlecast", "fn")
         .or(kasa)
+        .or_else(|| txt("amzn-wplay", "n"))
         .or_else(|| service(&["device-info", "airplay", "companion-link", "raop", "hap"]));
     let dns = d.hostname.as_ref().map(|h| {
         if h.ends_with(".local") {
@@ -550,6 +576,7 @@ fn name(d: &Device) -> Option<String> {
         local,
         service(&["smb", "home-assistant", "ipp", "printer"]),
         d.ssdp.as_ref().and_then(|s| s.friendly_name.clone()),
+        d.netbios.as_ref().map(|n| n.name.clone()),
         m.and_then(|m| m.hostname.clone()),
         dns,
     ]
@@ -811,6 +838,72 @@ mod tests {
         let mut router = device(&[53, 80], None);
         router.gateway = true;
         assert_eq!(identify(&router), None);
+    }
+
+    #[test]
+    fn single_purpose_services() {
+        let id = |services: &[&str]| {
+            let mut d = device(&[], None);
+            let mut m = crate::mdns::MdnsInfo::default();
+            for s in services {
+                m.services.insert(s.to_string(), "x".into());
+            }
+            d.mdns = Some(m);
+            identify(&d)
+        };
+        // A NAS running Plex is reached as a media server.
+        assert_eq!(
+            id(&["adisk", "plexmediasvr"]),
+            Some(("Media server", Some("Plex".into())))
+        );
+        assert_eq!(
+            id(&["mediaremotetv"]),
+            Some(("TV / streamer", Some("Apple TV".into())))
+        );
+        assert_eq!(id(&["nanoleafapi"]).map(|i| i.0), Some("Smart light"));
+        assert_eq!(id(&["elg"]).and_then(|i| i.1).as_deref(), Some("Elgato"));
+        assert_eq!(id(&["scanner"]), Some(("Printer", None)));
+        assert_eq!(id(&["miio"]), Some(("Smart home", Some("Xiaomi".into()))));
+        assert_eq!(id(&["matterc"]), Some(("Smart home", None)));
+        assert_eq!(id(&["daap"]), Some(("Computer", None)));
+    }
+
+    #[test]
+    fn netbios_names() {
+        let mut d = device(&[445], None);
+        d.netbios = Some(crate::netbios::NetbiosInfo {
+            name: "DESKTOP-4F2K9QX".into(),
+            mac: None,
+        });
+        d.hostname = Some("192-168-1-2.lan".into());
+        assert_eq!(name(&d).as_deref(), Some("DESKTOP-4F2K9QX"));
+        assert_eq!(identify(&d), Some(("Computer", Some("Windows PC".into()))));
+        // UPnP's friendly name comes first; NetBIOS beats the mDNS host.
+        d.ssdp = Some(crate::ssdp::SsdpInfo {
+            friendly_name: Some("NorthWoodsNAS (DS916+)".into()),
+            ..Default::default()
+        });
+        assert_eq!(name(&d).as_deref(), Some("NorthWoodsNAS (DS916+)"));
+        d.ssdp = None;
+        d.mdns = Some(crate::mdns::MdnsInfo {
+            hostname: Some("e6b1c9d2.lan".into()),
+            ..Default::default()
+        });
+        assert_eq!(name(&d).as_deref(), Some("DESKTOP-4F2K9QX"));
+    }
+
+    #[test]
+    fn fire_tv_names() {
+        let mut d = device(&[], None);
+        let mut m = crate::mdns::MdnsInfo::default();
+        m.services
+            .insert("amzn-wplay".into(), "amzn.dmgr:6F22".into());
+        m.txt
+            .entry("amzn-wplay".into())
+            .or_default()
+            .insert("n".into(), "Bedroom Fire TV".into());
+        d.mdns = Some(m);
+        assert_eq!(name(&d).as_deref(), Some("Bedroom Fire TV"));
     }
 
     #[test]

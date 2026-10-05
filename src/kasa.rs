@@ -4,6 +4,9 @@
 //!
 //! Newer firmware (and Tapo devices) only speak an authenticated protocol,
 //! so they stay silent here.
+//!
+//! Some access points don't pass broadcasts on to Wi-Fi clients, so hosts
+//! that stay quiet are asked again directly (`query`).
 
 use ipnetwork::Ipv4Network;
 use serde::{Deserialize, Serialize};
@@ -40,25 +43,51 @@ pub async fn discover(
     net: Ipv4Network,
     wait: Duration,
 ) -> HashMap<Ipv4Addr, KasaInfo> {
-    let mut found = HashMap::new();
     let Ok(sock) = UdpSocket::bind((local_ip, 0)).await else {
-        return found;
+        return HashMap::new();
     };
     if sock.set_broadcast(true).is_err() {
-        return found;
+        return HashMap::new();
     }
     let query = xor_encrypt(QUERY.as_bytes());
-    let send = || async {
-        let _ = sock.send_to(&query, (net.broadcast(), PORT)).await;
-    };
-    send().await;
+    let _ = sock.send_to(&query, (net.broadcast(), PORT)).await;
+    let start = Instant::now();
+    collect(&sock, net, start + wait, Some(start + wait / 3)).await
+}
 
-    let deadline = Instant::now() + wait;
-    let resend_at = Instant::now() + wait / 3;
-    let mut resent = false;
+/// Ask each of `targets` directly, for plugs that missed the broadcast or
+/// whose access point doesn't pass broadcasts on. Collects answers for `wait`.
+pub async fn query(
+    local_ip: Ipv4Addr,
+    net: Ipv4Network,
+    targets: &[Ipv4Addr],
+    wait: Duration,
+) -> HashMap<Ipv4Addr, KasaInfo> {
+    if targets.is_empty() {
+        return HashMap::new();
+    }
+    let Ok(sock) = UdpSocket::bind((local_ip, 0)).await else {
+        return HashMap::new();
+    };
+    let query = xor_encrypt(QUERY.as_bytes());
+    for &ip in targets {
+        let _ = sock.send_to(&query, (ip, PORT)).await;
+    }
+    collect(&sock, net, Instant::now() + wait, None).await
+}
+
+/// Read answers until `deadline`, broadcasting the query again at
+/// `rebroadcast_at` if given.
+async fn collect(
+    sock: &UdpSocket,
+    net: Ipv4Network,
+    deadline: Instant,
+    mut rebroadcast_at: Option<Instant>,
+) -> HashMap<Ipv4Addr, KasaInfo> {
+    let mut found = HashMap::new();
     let mut buf = vec![0u8; 4096];
     loop {
-        let until = if resent { deadline } else { resend_at };
+        let until = rebroadcast_at.unwrap_or(deadline);
         match timeout_at(until, sock.recv_from(&mut buf)).await {
             Ok(Ok((n, SocketAddr::V4(src)))) if net.contains(*src.ip()) => {
                 if let Some(info) = parse(&xor_decrypt(&buf[..n])) {
@@ -66,9 +95,10 @@ pub async fn discover(
                 }
             }
             Ok(_) => {}
-            Err(_) if !resent => {
-                resent = true;
-                send().await;
+            Err(_) if rebroadcast_at.is_some() => {
+                rebroadcast_at = None;
+                let query = xor_encrypt(QUERY.as_bytes());
+                let _ = sock.send_to(&query, (net.broadcast(), PORT)).await;
             }
             Err(_) => break,
         }

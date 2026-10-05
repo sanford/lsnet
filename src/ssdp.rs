@@ -38,16 +38,69 @@ pub async fn discover(
         return HashMap::new();
     };
     let _ = sock.send_to(SEARCH.as_bytes(), SSDP).await;
+    let start = Instant::now();
+    collect(
+        &sock,
+        net,
+        own_ips,
+        start + wait,
+        Some(start + wait / 3),
+        start + wait + fetch_grace,
+    )
+    .await
+}
 
-    let deadline = Instant::now() + wait;
-    let resend_at = Instant::now() + wait / 3;
-    let mut resent = false;
+/// Search each of `targets` directly, for devices whose answers to the
+/// multicast search were lost: Wi-Fi access points often filter multicast,
+/// and a unicast search gets through. Everything, description fetches
+/// included, finishes within `wait`.
+pub async fn query(
+    local_ip: Ipv4Addr,
+    net: Ipv4Network,
+    own_ips: &[Ipv4Addr],
+    targets: &[Ipv4Addr],
+    wait: Duration,
+) -> HashMap<Ipv4Addr, SsdpInfo> {
+    if targets.is_empty() {
+        return HashMap::new();
+    }
+    let Ok(sock) = UdpSocket::bind((local_ip, 0)).await else {
+        return HashMap::new();
+    };
+    for &ip in targets {
+        let _ = sock
+            .send_to(unicast_search(ip).as_bytes(), (ip, 1900))
+            .await;
+    }
+    let end = Instant::now() + wait;
+    collect(&sock, net, own_ips, end, None, end).await
+}
+
+/// An M-SEARCH addressed to one device. Unicast searches are answered at
+/// once, so MX only matters to devices that ignore that rule.
+fn unicast_search(ip: Ipv4Addr) -> String {
+    format!(
+        "M-SEARCH * HTTP/1.1\r\nHOST: {ip}:1900\r\nMAN: \"ssdp:discover\"\r\nMX: 1\r\nST: upnp:rootdevice\r\n\r\n"
+    )
+}
+
+/// Read search responses until `listen_end`, repeating the multicast search
+/// at `resend_at` if given, and fetch each responder's description as soon as
+/// it answers. Descriptions still arriving at `fetch_end` are dropped.
+async fn collect(
+    sock: &UdpSocket,
+    net: Ipv4Network,
+    own_ips: &[Ipv4Addr],
+    listen_end: Instant,
+    mut resend_at: Option<Instant>,
+    fetch_end: Instant,
+) -> HashMap<Ipv4Addr, SsdpInfo> {
     let mut seen: HashMap<Ipv4Addr, Option<String>> = HashMap::new();
     let mut fetches = JoinSet::new();
     let mut buf = vec![0u8; 4096];
 
     loop {
-        let until = if resent { deadline } else { resend_at };
+        let until = resend_at.unwrap_or(listen_end);
         match timeout_at(until, sock.recv_from(&mut buf)).await {
             Ok(Ok((n, SocketAddr::V4(src)))) => {
                 let ip = *src.ip();
@@ -67,14 +120,13 @@ pub async fn discover(
                 if let Some((host, port, path)) =
                     header("location").and_then(|l| description_url(&l, ip, own_ips))
                 {
-                    fetches.spawn(async move {
-                        (ip, http::get(host, port, &path, wait + fetch_grace).await)
-                    });
+                    let wait = fetch_end.saturating_duration_since(Instant::now());
+                    fetches.spawn(async move { (ip, http::get(host, port, &path, wait).await) });
                 }
             }
             Ok(_) => {}
-            Err(_) if !resent => {
-                resent = true;
+            Err(_) if resend_at.is_some() => {
+                resend_at = None;
                 let _ = sock.send_to(SEARCH.as_bytes(), SSDP).await;
             }
             Err(_) => break,
@@ -94,8 +146,7 @@ pub async fn discover(
         })
         .collect();
 
-    let grace_end = Instant::now() + fetch_grace;
-    while let Ok(Some(joined)) = timeout_at(grace_end, fetches.join_next()).await {
+    while let Ok(Some(joined)) = timeout_at(fetch_end, fetches.join_next()).await {
         let Ok((ip, Some(resp))) = joined else {
             continue;
         };
@@ -129,6 +180,13 @@ fn description_url(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unicast_search_names_its_target() {
+        let s = unicast_search("192.168.1.57".parse().unwrap());
+        assert!(s.starts_with("M-SEARCH * HTTP/1.1\r\nHOST: 192.168.1.57:1900\r\n"));
+        assert!(s.ends_with("ST: upnp:rootdevice\r\n\r\n"));
+    }
 
     #[test]
     fn follows_only_safe_locations() {

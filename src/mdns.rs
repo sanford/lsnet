@@ -56,6 +56,16 @@ const SERVICE_TYPES: &[&str] = &[
     "_rdlink._tcp.local",
     "_nvstream._tcp.local",
     "_umbrel._tcp.local",
+    "_mediaremotetv._tcp.local",
+    "_viziocast._tcp.local",
+    "_nanoleafapi._tcp.local",
+    "_miio._udp.local",
+    "_daap._tcp.local",
+    "_plexmediasvr._tcp.local",
+    "_touch-able._tcp.local",
+    "_scanner._tcp.local",
+    "_matterc._udp.local",
+    "_elg._tcp.local",
 ];
 
 /// TXT keys that carry model or identity information; everything else is noise.
@@ -74,6 +84,8 @@ const TXT_KEYS: &[&str] = &[
     "mn",
     "vn",
     "osxvers",
+    // Fire TV's owner-given name, on _amzn-wplay.
+    "n",
 ];
 
 #[derive(Default, Clone, Serialize)]
@@ -87,6 +99,9 @@ pub struct MdnsInfo {
     /// Service type → the port it's offered on.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub ports: BTreeMap<String, u16>,
+    /// A MAC address one of its service names gave away (see `instance_mac`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mac: Option<String>,
 }
 
 #[derive(Default)]
@@ -250,15 +265,65 @@ fn split_instance(name: &str) -> Option<(String, String)> {
     Some((instance, service))
 }
 
+/// The MAC address some services put in their instance names, which is the
+/// only way to learn it without ARP: AirPlay audio (`raop`) names instances
+/// `A1B2C3D4E5F6@Living Room`, and Linux workstations `host [aa:bb:cc:dd:ee:ff]`.
+/// Returns the instance name to keep (without a workstation's suffix) and the MAC.
+fn instance_mac(service: &str, instance: &str) -> (String, Option<String>) {
+    let hex_pairs = |hex: &str| -> Option<String> {
+        let bytes: Vec<u8> = (0..6)
+            .map(|i| u8::from_str_radix(hex.get(i * 2..i * 2 + 2)?, 16).ok())
+            .collect::<Option<_>>()?;
+        bytes.iter().any(|&b| b != 0).then(|| {
+            bytes
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect::<Vec<_>>()
+                .join(":")
+        })
+    };
+    match service {
+        "raop" => {
+            let mac = instance
+                .split_once('@')
+                .filter(|(hex, _)| hex.len() == 12 && hex.bytes().all(|b| b.is_ascii_hexdigit()))
+                .and_then(|(hex, _)| hex_pairs(hex));
+            (instance.to_string(), mac)
+        }
+        "workstation" => {
+            let parsed = instance
+                .strip_suffix(']')
+                .and_then(|rest| rest.rsplit_once(" ["))
+                .and_then(|(name, mac)| {
+                    let parts: Vec<&str> = mac.split(':').collect();
+                    let ok = parts.len() == 6
+                        && parts
+                            .iter()
+                            .all(|p| p.len() == 2 && p.bytes().all(|b| b.is_ascii_hexdigit()));
+                    ok.then(|| (name.trim_end(), parts.concat()))
+                });
+            match parsed {
+                Some((name, hex)) => (name.to_string(), hex_pairs(&hex)),
+                None => (instance.to_string(), None),
+            }
+        }
+        _ => (instance.to_string(), None),
+    }
+}
+
 fn resolve(rec: Records) -> HashMap<Ipv4Addr, MdnsInfo> {
     let mut out: HashMap<Ipv4Addr, MdnsInfo> = HashMap::new();
     for (key, (display, src)) in &rec.instances {
         let Some((instance, service)) = split_instance(display) else {
             continue;
         };
+        let (instance, mac) = instance_mac(&service, &instance);
         let srv = rec.srv.get(key);
         let ip = srv.and_then(|(h, _)| rec.a.get(h)).copied().unwrap_or(*src);
         let info = out.entry(ip).or_default();
+        if info.mac.is_none() {
+            info.mac = mac;
+        }
         if let Some((h, port)) = srv {
             info.hostname.get_or_insert_with(|| h.clone());
             info.ports.insert(service.clone(), *port);
@@ -292,6 +357,30 @@ mod tests {
         assert_eq!(parse_reverse(&reverse_name(ip)), Some(ip));
         assert_eq!(parse_reverse("_airplay._tcp.local"), None);
         assert_eq!(parse_reverse("1.2.3.in-addr.arpa"), None);
+    }
+
+    #[test]
+    fn macs_from_instance_names() {
+        assert_eq!(
+            instance_mac("raop", "6C4A85D1E0F2@Living Room"),
+            (
+                "6C4A85D1E0F2@Living Room".into(),
+                Some("6c:4a:85:d1:e0:f2".into())
+            )
+        );
+        assert_eq!(
+            instance_mac("workstation", "nas [00:11:32:66:D8:71]"),
+            ("nas".into(), Some("00:11:32:66:d8:71".into()))
+        );
+        // All zeros, the wrong shape, or the wrong service: no MAC.
+        assert_eq!(instance_mac("raop", "000000000000@Speaker").1, None);
+        assert_eq!(instance_mac("raop", "6C4A85D1E0@Speaker").1, None);
+        assert_eq!(instance_mac("raop", "Kitchen").1, None);
+        assert_eq!(
+            instance_mac("workstation", "pi [not a mac]"),
+            ("pi [not a mac]".into(), None)
+        );
+        assert_eq!(instance_mac("airplay", "6C4A85D1E0F2@Living Room").1, None);
     }
 
     #[test]

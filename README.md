@@ -32,8 +32,8 @@ It's meant to answer the question "what is that?" faster and more simply than [n
 
 - **Zero config.** It detects your interface, subnet and gateway on its own.
 - **Fast.** Every discovery method runs concurrently, and a /24 takes about 2 seconds.
-- **Identifies devices, not just addresses.** It combines what devices announce about themselves (Bonjour, UPnP), their naming conventions, web UI banners, open ports (including homelab staples like Proxmox, Plex and Home Assistant) and MAC vendors into a type and a model.
-- **Works without root.** On Linux and Windows you even get MAC addresses and vendors without it.
+- **Identifies devices, not just addresses.** It combines what devices announce about themselves (Bonjour, UPnP, Windows and Samba NetBIOS names), their naming conventions, web UI banners, open ports (including homelab staples like Proxmox, Plex and Home Assistant) and MAC vendors into a type and a model.
+- **Works without root.** On Linux and Windows you even get MAC addresses and vendors without it. On macOS, some come through anyway: Windows and Samba hosts report theirs over NetBIOS, and AirPlay speakers and Linux machines put theirs in their Bonjour names.
 - **macOS, Linux and Windows.**
 - **Browse or print.** In a terminal, `lsnet` opens a browser with everything known about each device. When piped, or with `-l`, it prints a table.
 - **Find your servers.** `Tab` in the browser, or `-s`, lists every service on the network (web UIs, SSH, file shares, databases, Plex, Proxmox, Home Assistant) with the address to reach it.

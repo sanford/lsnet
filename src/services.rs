@@ -98,6 +98,7 @@ fn advertised_name(service: &str) -> Option<&'static str> {
         "esphomelib" => "ESPHome",
         "octoprint" => "OctoPrint",
         "umbrel" => "Umbrel",
+        "plexmediasvr" => "Plex",
         _ => return None,
     })
 }
