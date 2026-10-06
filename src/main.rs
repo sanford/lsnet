@@ -1,14 +1,20 @@
 mod arp;
 mod classify;
+mod demo;
+mod history;
 mod http;
 mod iface;
 mod kasa;
+mod live;
 mod mdns;
 mod netbios;
 mod oui;
 mod ping;
 mod platform;
 mod probe;
+#[cfg(test)]
+mod readme;
+mod scan;
 mod services;
 mod ssdp;
 mod tui;
@@ -20,16 +26,15 @@ use mdns::MdnsInfo;
 use netbios::NetbiosInfo;
 use owo_colors::{OwoColorize, Stream::Stderr};
 use pnet_base::MacAddr;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use ssdp::SsdpInfo;
-use std::collections::{BTreeMap, HashMap, HashSet};
-use std::io::{ErrorKind, IsTerminal};
-use std::net::{IpAddr, Ipv4Addr};
+use std::io::{IsTerminal, Write};
+use std::net::Ipv4Addr;
+use std::path::Path;
 use std::process::ExitCode;
-use std::sync::mpsc;
+use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
-use std::time::{Duration, Instant};
-use tokio::task::JoinSet;
+use std::time::Duration;
 
 /// See what's on your local network.
 #[derive(Parser)]
@@ -69,22 +74,72 @@ struct Args {
     /// Skip hostname lookups
     #[arg(long)]
     no_dns: bool,
+
+    /// Show a made-up network instead of scanning (no packets are sent)
+    #[arg(long, conflicts_with_all = ["interface", "net", "timeout", "no_dns"])]
+    demo: bool,
+
+    /// Don't compare with earlier scans of this network, or remember this one
+    #[arg(long)]
+    no_history: bool,
+
+    /// Show what lsnet remembers about the networks it has scanned, and
+    /// delete it
+    #[arg(long, exclusive = true)]
+    forget: bool,
 }
 
-#[derive(Serialize)]
+/// Everything known about one address. `--json` prints it, and reading that
+/// back (the demo, the fixture tests) recomputes every derived field from
+/// the evidence rather than trusting it: see `finish`.
+#[derive(Clone, Serialize, Deserialize)]
 pub struct Device {
     ip: Ipv4Addr,
+    #[serde(skip_deserializing)]
     name: Option<String>,
-    #[serde(rename = "type")]
+    /// Where the name came from, e.g. "AirPlay" or "reverse DNS".
+    #[serde(skip_deserializing, skip_serializing_if = "Option::is_none")]
+    name_from: Option<String>,
+    #[serde(rename = "type", skip_deserializing)]
     kind: Option<String>,
+    #[serde(skip_deserializing)]
     model: Option<String>,
+    /// The evidence that decided the type, e.g. "port 8006 open (Proxmox)".
+    #[serde(skip_deserializing, skip_serializing_if = "Option::is_none")]
+    type_from: Option<String>,
+    #[serde(skip_deserializing)]
     vendor: Option<&'static str>,
     mac: Option<String>,
+    #[serde(skip_deserializing)]
     randomized_mac: bool,
     hostname: Option<String>,
+    #[serde(default)]
     open_ports: Vec<u16>,
+    #[serde(default)]
     gateway: bool,
+    #[serde(default)]
     this_device: bool,
+    /// What's wrong with its address, if anything.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    flags: Vec<arp::Flag>,
+    /// For an address conflict, the other MACs that answered for its address.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    other_macs: Vec<String>,
+    /// Addresses outside this network that it also uses.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    other_ips: Vec<Ipv4Addr>,
+    /// When this network's history first saw it, in Unix seconds.
+    #[serde(skip_deserializing, skip_serializing_if = "Option::is_none")]
+    first_seen: Option<u64>,
+    /// When it was last seen, for a device that didn't answer this time.
+    #[serde(skip)]
+    last_seen: Option<u64>,
+    /// How it differs from the last scan of this network.
+    #[serde(skip_deserializing, skip_serializing_if = "Vec::is_empty")]
+    changes: Vec<history::Change>,
+    /// Heard from after the scan, while the browser was listening.
+    #[serde(skip)]
+    heard_later: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     mdns: Option<MdnsInfo>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -102,8 +157,10 @@ impl Device {
         Device {
             ip,
             name: None,
+            name_from: None,
             kind: None,
             model: None,
+            type_from: None,
             vendor: None,
             mac: None,
             randomized_mac: false,
@@ -111,6 +168,13 @@ impl Device {
             open_ports: Vec::new(),
             gateway: false,
             this_device: false,
+            flags: Vec::new(),
+            other_macs: Vec::new(),
+            other_ips: Vec::new(),
+            first_seen: None,
+            last_seen: None,
+            changes: Vec::new(),
+            heard_later: false,
             mdns: None,
             ssdp: None,
             kasa: None,
@@ -118,11 +182,32 @@ impl Device {
             http: None,
         }
     }
+
+    /// Here last time, but not this time: a row from history, not the scan.
+    fn missing(&self) -> bool {
+        self.changes.contains(&history::Change::Missing)
+    }
+
+    /// Whether its address is outside this network, so it can't be probed.
+    fn stray(&self) -> bool {
+        self.flags
+            .iter()
+            .any(|f| matches!(f, arp::Flag::LinkLocal | arp::Flag::OffSubnet))
+    }
+}
+
+/// The last step for every device, scanned or read back from JSON: what its
+/// MAC says, then what it is.
+fn finish(d: &mut Device) {
+    let mac: Option<MacAddr> = d.mac.as_deref().and_then(|m| m.parse().ok());
+    d.vendor = mac.and_then(oui::vendor);
+    d.randomized_mac = mac.is_some_and(oui::is_randomized);
+    classify::classify(d);
 }
 
 fn main() -> ExitCode {
     let args = Args::parse();
-    match run(&args) {
+    match run(args) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!(
@@ -134,40 +219,68 @@ fn main() -> ExitCode {
     }
 }
 
-fn run(args: &Args) -> Result<(), String> {
+fn run(args: Args) -> Result<(), String> {
+    if args.forget {
+        return forget();
+    }
     // Browse in a terminal; print for pipes, files and anything asking for text.
     // Windows terminals don't set TERM, so there only TERM=dumb says no.
     let interactive = !(args.list || args.json || args.verbose)
         && std::io::stdin().is_terminal()
         && std::io::stdout().is_terminal()
         && std::env::var("TERM").map_or(cfg!(windows), |t| t != "dumb");
+    let store = (!args.demo && !args.no_history)
+        .then(history::path)
+        .flatten();
+    let memory = Arc::new(memory(&args, store.as_deref()));
+    let args = Arc::new(args);
     // After browsing, the table is still printed so the results stay in the scrollback.
     let (scan, show_services) = if interactive {
-        tui::run(|| scan(args), args.services)?
+        tui::run(
+            || live::start(args.clone(), memory.clone(), true),
+            args.services,
+        )?
     } else if std::io::stderr().is_terminal() {
         let dim = |s: String| {
             s.if_supports_color(Stderr, |t| t.dimmed().to_string())
                 .to_string()
         };
+        let status = Mutex::new(String::new());
         let result = animate(
-            || scan(args),
-            |ping| eprint!("\r{}", dim(format!("{ping}  Scanning the network…"))),
+            || live::once(&args, &memory, &|s| *status.lock().unwrap() = s),
+            |ping| {
+                let status = status.lock().unwrap();
+                let status = if status.is_empty() {
+                    String::new()
+                } else {
+                    format!(" {status}")
+                };
+                eprint!(
+                    "\r\x1b[2K{}",
+                    dim(format!("{ping}  Scanning the network…{status}"))
+                )
+            },
         );
         eprint!("\r\x1b[2K");
         (result?, args.services)
     } else {
-        (scan(args)?, args.services)
+        (live::once(&args, &memory, &|_| {})?, args.services)
     };
+    if let Some(path) = &store {
+        remember(path, &scan);
+    }
+
+    let present: Vec<Device> = scan.present().cloned().collect();
     let json = if !args.json {
         None
     } else if show_services {
-        let rows: Vec<_> = services::list(&scan.devices)
+        let rows: Vec<_> = services::list(&present)
             .iter()
-            .map(|s| services::Json::new(s, &scan.devices))
+            .map(|s| services::Json::new(s, &present))
             .collect();
         Some(serde_json::to_string_pretty(&rows))
     } else {
-        Some(serde_json::to_string_pretty(&scan.devices))
+        Some(serde_json::to_string_pretty(&present))
     };
     if let Some(json) = json {
         println!("{}", json.unwrap());
@@ -175,17 +288,108 @@ fn run(args: &Args) -> Result<(), String> {
     }
 
     if show_services {
-        print_services(&scan.devices);
+        println!("{}", services_table(&present, Style::Terminal));
     } else {
-        print_table(&scan.devices, args.verbose);
+        println!("{}", device_table(&present, args.verbose, Style::Terminal));
     }
     let dim = |s: &str| {
         s.if_supports_color(Stderr, |t| t.dimmed().to_string())
             .to_string()
     };
-    eprintln!("\n{}", dim(&scan.summary));
-    for note in &scan.notes {
-        eprintln!("{}", dim(note));
+    eprintln!();
+    for line in footer(&scan) {
+        eprintln!("{}", dim(&line));
+    }
+    Ok(())
+}
+
+/// What's printed under a table: the summary, what changed since last
+/// time, caveats, and the devices that didn't answer this time.
+fn footer(scan: &Scan) -> Vec<String> {
+    let mut lines = vec![scan.summary.clone()];
+    lines.extend(scan.changes.clone());
+    lines.extend(scan.notes.iter().cloned());
+    for d in scan.devices.iter().filter(|d| d.missing()) {
+        let who = match &d.name {
+            Some(name) => format!("{name} ({})", d.ip),
+            None => d.ip.to_string(),
+        };
+        let when = d.last_seen.map_or(String::new(), |t| {
+            format!(", last seen {}", history::ago(scan.clock, t))
+        });
+        lines.push(format!("missing: {who} didn't answer this time{when}"));
+    }
+    lines
+}
+
+/// The history to compare scans with.
+fn memory(args: &Args, store: Option<&Path>) -> live::Memory {
+    if args.demo {
+        return demo::memory();
+    }
+    match store {
+        Some(path) => {
+            let loaded = history::load(path);
+            live::Memory {
+                history: Some(loaded.history),
+                now: None,
+                warning: loaded.warning,
+            }
+        }
+        None => live::Memory {
+            history: None,
+            now: None,
+            warning: None,
+        },
+    }
+}
+
+/// Add this scan to the history at `path`, if it's of a network to remember.
+fn remember(path: &Path, scan: &Scan) {
+    let Some(id) = &scan.network else {
+        return;
+    };
+    // Read it again, so a scan that finished meanwhile isn't lost.
+    let loaded = history::load(path);
+    if !loaded.writable {
+        return;
+    }
+    let mut history = loaded.history;
+    history.record(&scan.devices, id, history::now());
+    if let Err(e) = history::save(path, &history) {
+        eprintln!("lsnet: couldn't save history to {}: {e}", path.display());
+    }
+}
+
+/// `--forget`: say what's remembered, and delete it if the user agrees.
+fn forget() -> Result<(), String> {
+    let path = history::path().ok_or("can't tell where history would be kept")?;
+    if !path.exists() {
+        println!("Nothing to forget: {} doesn't exist.", path.display());
+        return Ok(());
+    }
+    let loaded = history::load(&path);
+    println!("{} remembers:", path.display());
+    for line in loaded.history.describe() {
+        println!("  {line}");
+    }
+    if !std::io::stdin().is_terminal() {
+        return Err("run --forget in a terminal, to confirm".into());
+    }
+    print!("Forget all of it? [y/N] ");
+    let _ = std::io::stdout().flush();
+    let mut answer = String::new();
+    std::io::stdin()
+        .read_line(&mut answer)
+        .map_err(|e| e.to_string())?;
+    if matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
+        std::fs::remove_file(&path).map_err(|e| format!("can't delete {}: {e}", path.display()))?;
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::remove_dir(dir); // only if it's empty
+        }
+        println!("Forgotten.");
+    } else {
+        println!("Kept.");
     }
     Ok(())
 }
@@ -218,305 +422,44 @@ fn animate<T: Send>(work: impl FnOnce() -> T + Send, mut frame: impl FnMut(&str)
 }
 
 /// The results of one pass over the network.
+#[derive(Clone)]
 pub struct Scan {
+    /// Sorted by address, then any devices that were here last time but
+    /// didn't answer (see `Device::missing`).
     devices: Vec<Device>,
     /// e.g. "27 devices on 192.168.1.0/24 (en0) in 2.1s"
     summary: String,
-    /// Caveats about what the scan couldn't see.
+    /// Caveats about what the scan couldn't see, and devices whose address
+    /// is wrong.
     notes: Vec<String>,
+    /// What changed since the last scan of this network, from its history.
+    changes: Option<String>,
+    /// Which network this was, when it's one to remember.
+    network: Option<history::NetworkId>,
+    /// Whether ARP ran, so devices that answer nothing else could be found.
+    arp_ran: bool,
+    /// The time "2 hours ago" is counted from, in Unix seconds: when history
+    /// marked it (the demo's is fixed).
+    clock: u64,
 }
 
-fn scan(args: &Args) -> Result<Scan, String> {
-    let start = Instant::now();
-    let ifc = iface::detect(args.interface.as_deref(), args.net)?;
-    let targets = ifc.targets();
-    // ARP and mDNS reverse lookups only reach this machine's own link.
-    let link_targets: Vec<Ipv4Addr> = targets
-        .iter()
-        .copied()
-        .filter(|ip| ifc.link.contains(*ip))
-        .collect();
-    let small = targets.len() <= ALL_AT_ONCE;
-    let wait = Duration::from_millis(args.timeout);
-    // Extra time for follow-up requests (UPnP descriptions, web banners).
-    let grace = Duration::from_millis(800);
-
-    probe::raise_fd_limit();
-    let rt = tokio::runtime::Runtime::new().map_err(|e| format!("can't start runtime: {e}"))?;
-
-    // On a large network, sweep ARP first when we can, so the port probe
-    // and ping only need the hosts that answered. Probing every address
-    // makes the kernel look each one up, and past about 1,000 Linux's ARP
-    // table overflows and hosts go missing. It's much faster, too.
-    let early_arp =
-        (!small && !link_targets.is_empty()).then(|| arp::sweep(&ifc, &link_targets, wait));
-    let probe_targets: Vec<Ipv4Addr> = match &early_arp {
-        Some(Ok(found)) => targets
-            .iter()
-            .copied()
-            .filter(|ip| !ifc.link.contains(*ip) || found.contains_key(ip))
-            .collect(),
-        _ => targets.clone(),
-    };
-
-    // Phase 1: every discovery method at once. The ARP sweep is blocking, so
-    // it gets its own thread while the async probes share the runtime.
-    let (arp_result, pinged, mut names, (open_ports, mdns, ssdp, kasa)) = thread::scope(|s| {
-        let arp = s.spawn(|| early_arp.unwrap_or_else(|| arp::sweep(&ifc, &link_targets, wait)));
-        let pinged = s.spawn(|| ping::sweep(&probe_targets, wait));
-        // Reverse DNS is slow per lookup but cheap in parallel, so start it for
-        // every address now instead of waiting to learn which ones are alive.
-        let names = s.spawn(|| {
-            if args.no_dns || !small {
-                return HashMap::new();
-            }
-            let mut ips = targets.clone();
-            ips.push(ifc.ip);
-            hostnames(ips, wait + grace)
-        });
-        let rest = rt.block_on(async {
-            tokio::join!(
-                probe::scan(&probe_targets, wait),
-                mdns::discover(ifc.ip, if small { &link_targets } else { &[] }, wait),
-                ssdp::discover(ifc.ip, ifc.net, &ifc.own_ips, wait, grace),
-                kasa::discover(ifc.ip, ifc.net, wait),
-            )
-        });
-        (
-            arp.join().expect("arp thread"),
-            pinged.join().expect("ping thread"),
-            names.join().expect("dns thread"),
-            rest,
-        )
-    });
-    let (mut arp_found, privileged) = match arp_result {
-        Ok(found) => (found, true),
-        Err(e)
-            if matches!(
-                e.kind(),
-                ErrorKind::PermissionDenied | ErrorKind::Unsupported
-            ) =>
-        {
-            (arp::Found::new(), false)
-        }
-        Err(e) => return Err(format!("ARP sweep on {} failed: {e}", ifc.iface.name)),
-    };
-    // The kernel's cache fills in hosts the sweep missed (asleep through
-    // both rounds) or couldn't send at all: the probes above made the kernel
-    // resolve every address that answered them, and any that ignored them
-    // but talked to us lately.
-    for (ip, mac) in arp::read_cache(&ifc) {
-        arp_found.entry(ip).or_insert(mac);
-    }
-
-    let mut hosts: BTreeMap<Ipv4Addr, Device> = BTreeMap::new();
-    // This machine's other addresses count too (it may be on Wi-Fi and
-    // Ethernet at once), unless the user named the network to scan.
-    let on_lan =
-        |ip: &Ipv4Addr| ifc.net.contains(*ip) || (args.net.is_none() && ifc.own_ips.contains(ip));
-    fn host(hosts: &mut BTreeMap<Ipv4Addr, Device>, ip: Ipv4Addr) -> &mut Device {
-        hosts.entry(ip).or_insert_with(|| Device::new(ip))
-    }
-    if ifc.net.contains(ifc.ip) {
-        host(&mut hosts, ifc.ip).mac = ifc.mac.map(|m| m.to_string());
-    }
-    for (ip, mac) in arp_found {
-        host(&mut hosts, ip).mac = Some(mac.to_string());
-    }
-    for &ip in &pinged {
-        host(&mut hosts, ip);
-    }
-    // Hosts the TCP probe didn't reach get their ports checked in phase 2.
-    let port_scanned: HashSet<Ipv4Addr> = open_ports.keys().copied().collect();
-    for (ip, ports) in open_ports {
-        host(&mut hosts, ip).open_ports = ports;
-    }
-    for (ip, info) in mdns.into_iter().filter(|(ip, _)| on_lan(ip)) {
-        host(&mut hosts, ip).mdns = Some(info);
-    }
-    for (ip, info) in ssdp.into_iter().filter(|(ip, _)| on_lan(ip)) {
-        host(&mut hosts, ip).ssdp = Some(info);
-    }
-    for (ip, info) in kasa.into_iter().filter(|(ip, _)| on_lan(ip)) {
-        host(&mut hosts, ip).kasa = Some(info);
-    }
-
-    let mut devices: Vec<Device> = hosts.into_values().collect();
-    for d in &mut devices {
-        d.gateway = Some(d.ip) == ifc.gateway;
-        d.this_device = ifc.own_ips.contains(&d.ip);
-    }
-    // Whether ARP (or the OS's cache) gave us MACs, before NetBIOS and
-    // Bonjour names fill in some of the rest.
-    let have_macs = devices.iter().any(|d| d.mac.is_some() && !d.this_device);
-
-    // Phase 2: ports for hosts found only some other way, then web banners
-    // for everything serving HTTP. Alongside, every live host is asked for
-    // its NetBIOS name, and those that stayed quiet to the UPnP and Kasa
-    // broadcasts are asked directly.
-    let follow_up: Vec<(Ipv4Addr, bool)> = devices
-        .iter()
-        .filter(|d| !d.this_device)
-        .filter_map(|d| {
-            let needs_ports = !port_scanned.contains(&d.ip);
-            (needs_ports || d.open_ports.contains(&80)).then_some((d.ip, needs_ports))
-        })
-        .collect();
-    let others = |missing: fn(&Device) -> bool| -> Vec<Ipv4Addr> {
-        devices
-            .iter()
-            .filter(|d| !d.this_device && missing(d))
-            .map(|d| d.ip)
-            .collect()
-    };
-    let netbios_targets = others(|_| true);
-    let ssdp_targets = others(|d| d.ssdp.is_none());
-    let kasa_targets = others(|d| d.kasa.is_none());
-    // Too many addresses to look them all up in advance, so look up just
-    // the devices found, alongside phase 2.
-    let late: Vec<Ipv4Addr> = if args.no_dns || small {
-        Vec::new()
-    } else {
-        devices.iter().map(|d| d.ip).collect()
-    };
-    let late_names = thread::spawn(move || hostnames(late, wait));
-    let (followed, netbios, late_ssdp, late_kasa) = rt.block_on(async {
-        let followed = async {
-            let mut set = JoinSet::new();
-            for (ip, needs_ports) in follow_up {
-                set.spawn(async move {
-                    let (ports, web_wait) = if needs_ports {
-                        (
-                            Some(probe::all_ports(ip, probe::AWAKE_WAIT).await),
-                            grace - probe::AWAKE_WAIT,
-                        )
-                    } else {
-                        (None, grace)
-                    };
-                    let web = ports.as_ref().is_none_or(|p| p.contains(&80));
-                    let banner = if web {
-                        http::banner(ip, 80, web_wait).await
-                    } else {
-                        None
-                    };
-                    (ip, ports, banner)
-                });
-            }
-            let mut out = HashMap::new();
-            while let Some(joined) = set.join_next().await {
-                if let Ok((ip, ports, banner)) = joined {
-                    out.insert(ip, (ports, banner));
-                }
-            }
-            out
-        };
-        tokio::join!(
-            followed,
-            netbios::query(ifc.ip, &netbios_targets, grace),
-            ssdp::query(ifc.ip, ifc.net, &ifc.own_ips, &ssdp_targets, grace),
-            kasa::query(ifc.ip, ifc.net, &kasa_targets, grace),
-        )
-    });
-    names.extend(late_names.join().expect("dns thread"));
-    for d in &mut devices {
-        if let Some((ports, banner)) = followed.get(&d.ip) {
-            if let Some(p) = ports {
-                d.open_ports = p.clone();
-            }
-            d.http = banner.clone();
-        }
-        if d.ssdp.is_none() {
-            d.ssdp = late_ssdp.get(&d.ip).cloned();
-        }
-        if d.kasa.is_none() {
-            d.kasa = late_kasa.get(&d.ip).cloned();
-        }
-        d.netbios = netbios.get(&d.ip).cloned();
-        // Without ARP, Windows and Samba hosts report their MAC over
-        // NetBIOS, and some Bonjour names carry one.
-        if d.mac.is_none() {
-            d.mac = d
-                .netbios
-                .as_ref()
-                .and_then(|n| n.mac.clone())
-                .or_else(|| d.mdns.as_ref().and_then(|m| m.mac.clone()));
-        }
-        let mac: Option<MacAddr> = d.mac.as_deref().and_then(|m| m.parse().ok());
-        d.vendor = mac.and_then(oui::vendor);
-        d.randomized_mac = mac.is_some_and(oui::is_randomized);
-        d.hostname = names.get(&d.ip).cloned();
-        classify::classify(d);
-    }
-
-    let summary = format!(
-        "{} devices on {} ({}) in {:.1}s",
-        devices.len(),
-        ifc.net,
-        ifc.iface.name,
-        start.elapsed().as_secs_f64()
-    );
-    let mut notes = Vec::new();
-    if let Some(full) = ifc.narrowed_from {
-        notes.push(if full.prefix() >= iface::MAX_NET_PREFIX {
-            format!("{full} is large; scanned only the local /24 (--net {full} scans all of it)")
-        } else {
-            format!("{full} is large; scanned only the local /24 (--net scans up to a /16 of it)")
-        });
-    }
-    if cfg!(target_os = "linux") && !privileged && link_targets.len() > ALL_AT_ONCE {
-        notes.push(
-            "without root, Linux tracks only about 1,000 addresses at once, so devices may be missing; run with sudo to see them all".into(),
-        );
-    }
-    if !ifc.on_link() {
-        notes.push(format!(
-            "{} isn't on {}'s network ({}), so devices were found by their open ports alone, without names from mDNS or UPnP",
-            ifc.net, ifc.iface.name, ifc.link
-        ));
-    }
-    // Where the OS shares its ARP cache (Linux), unprivileged scans already
-    // see MACs and quiet devices, so the tip only matters when it doesn't.
-    if !privileged && !have_macs && ifc.on_link() {
-        notes.push("tip: run with sudo to see MAC addresses and vendors, and find devices that ignore pings".into());
-    }
-    Ok(Scan {
-        devices,
-        summary,
-        notes,
-    })
-}
-
-/// Reverse lookups (which on macOS also ask mDNS for `.local` names), in
-/// parallel, giving up on stragglers at the deadline.
-/// Up to this many addresses (a /22), every one gets a reverse DNS and mDNS
-/// lookup up front, before we know which are in use.
-const ALL_AT_ONCE: usize = 1024;
-
-fn hostnames(ips: Vec<Ipv4Addr>, deadline: Duration) -> HashMap<Ipv4Addr, String> {
-    let (tx, rx) = mpsc::channel();
-    let n = ips.len();
-    for ip in ips {
-        let tx = tx.clone();
-        thread::spawn(move || {
-            let name = dns_lookup::lookup_addr(&IpAddr::V4(ip))
-                .ok()
-                .filter(|n| n.parse::<IpAddr>().is_err())
-                .map(|n| n.trim_end_matches('.').to_string());
-            let _ = tx.send((ip, name));
-        });
-    }
-    let end = Instant::now() + deadline;
-    let mut out = HashMap::new();
-    for _ in 0..n {
-        match rx.recv_timeout(end.saturating_duration_since(Instant::now())) {
-            Ok((ip, Some(name))) => {
-                out.insert(ip, name);
-            }
-            Ok(_) => {}
-            Err(_) => break,
+impl Scan {
+    fn empty() -> Scan {
+        Scan {
+            devices: Vec::new(),
+            summary: String::new(),
+            notes: Vec::new(),
+            changes: None,
+            network: None,
+            arp_ran: false,
+            clock: 0,
         }
     }
-    out
+
+    /// The devices that answered, without the ones history says are missing.
+    fn present(&self) -> impl Iterator<Item = &Device> {
+        self.devices.iter().filter(|d| !d.missing())
+    }
 }
 
 /// Infrastructure services that say nothing about what a device is.
@@ -540,6 +483,8 @@ struct Field {
     text: Option<String>,
     color: Option<Color>,
     bold: bool,
+    /// Whether an empty cell gets the dotted leader.
+    leader: bool,
 }
 
 impl Field {
@@ -549,7 +494,14 @@ impl Field {
             text,
             color: None,
             bold: false,
+            leader: true,
         }
+    }
+
+    /// Empty is blank: for a last column, where a leader leads nowhere.
+    fn without_leader(mut self) -> Self {
+        self.leader = false;
+        self
     }
 
     fn fg(mut self, color: Color) -> Self {
@@ -578,12 +530,23 @@ impl Field {
                 }
                 cell
             }
-            None => Cell::new(".".repeat(column_width)).fg(Color::DarkGrey),
+            None if self.leader => Cell::new(".".repeat(column_width)).fg(Color::DarkGrey),
+            None => Cell::new(""),
         }
     }
 }
 
-fn print_table(devices: &[Device], verbose: bool) {
+/// Whether a table may use the terminal's colors and width.
+#[derive(Clone, Copy)]
+enum Style {
+    /// Colored and fitted to the terminal, when there is one.
+    Terminal,
+    /// Plain text at full width, as the README shows it.
+    #[cfg(test)]
+    Plain,
+}
+
+fn device_table(devices: &[Device], verbose: bool, style: Style) -> String {
     // Without raw access there are no MACs at all; don't waste two columns on blanks.
     let show_mac = devices.iter().any(|d| d.mac.is_some() && !d.this_device);
 
@@ -596,14 +559,45 @@ fn print_table(devices: &[Device], verbose: bool) {
     if verbose {
         header.extend(["HOSTNAME", "PORTS", "SERVICES"]);
     }
+    // What changed since the last scan, when anything did.
+    let show_changes = devices.iter().any(|d| !d.changes.is_empty());
+    if show_changes {
+        header.push("CHANGE");
+    }
 
-    print_fields(
+    fields_table(
         &header,
-        devices.iter().map(|d| row(d, show_mac, verbose)).collect(),
-    );
+        devices
+            .iter()
+            .map(|d| {
+                let mut row = row(d, show_mac, verbose);
+                if show_changes {
+                    let change = Field::new(change_words(d).as_deref()).fg(Color::Yellow);
+                    row.push(change.without_leader());
+                }
+                row
+            })
+            .collect(),
+        style,
+    )
 }
 
-fn print_services(devices: &[Device]) {
+/// "new", "moved from 192.168.1.61", "renamed from dns".
+fn change_words(d: &Device) -> Option<String> {
+    let words: Vec<String> = d
+        .changes
+        .iter()
+        .map(|c| match c {
+            history::Change::New => "new".into(),
+            history::Change::Moved { from } => format!("moved from {from}"),
+            history::Change::Renamed { from } => format!("renamed from {from}"),
+            history::Change::Missing => "missing".into(),
+        })
+        .collect();
+    (!words.is_empty()).then(|| words.join(", "))
+}
+
+fn services_table(devices: &[Device], style: Style) -> String {
     let rows = services::list(devices)
         .iter()
         .map(|s| {
@@ -620,10 +614,10 @@ fn print_services(devices: &[Device]) {
             ]
         })
         .collect();
-    print_fields(&["ADDRESS", "SERVICE", "HOST"], rows);
+    fields_table(&["ADDRESS", "SERVICE", "HOST"], rows, style)
 }
 
-fn print_fields(header: &[&str], rows: Vec<Vec<Field>>) {
+fn fields_table(header: &[&str], rows: Vec<Vec<Field>>, style: Style) -> String {
     let widths: Vec<usize> = (0..header.len())
         .map(|i| {
             rows.iter()
@@ -646,7 +640,14 @@ fn print_fields(header: &[&str], rows: Vec<Vec<Field>>) {
     for r in rows {
         table.add_row(r.into_iter().zip(&widths).map(|(f, &w)| f.render(w)));
     }
-    println!("{table}");
+    match style {
+        Style::Terminal => {}
+        #[cfg(test)]
+        Style::Plain => {
+            table.force_no_tty();
+        }
+    }
+    table.to_string()
 }
 
 /// `s` with terminal control characters removed. Names and models come from
@@ -659,6 +660,25 @@ fn printable(s: &str) -> String {
             !c.is_control() && !matches!(c, '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
         })
         .collect()
+}
+
+/// The most serious thing wrong with a device's address, if anything.
+fn ip_alarm(d: &Device) -> Option<arp::Flag> {
+    if d.flags.contains(&arp::Flag::AddressConflict) {
+        Some(arp::Flag::AddressConflict)
+    } else {
+        d.flags.first().copied()
+    }
+}
+
+/// Green, unless something is wrong with the address: red for a conflict,
+/// yellow for an address from somewhere else.
+fn ip_color(d: &Device) -> Color {
+    match ip_alarm(d) {
+        Some(arp::Flag::AddressConflict) => Color::Red,
+        Some(_) => Color::Yellow,
+        None => Color::Green,
+    }
 }
 
 /// The TYPE column, marking this machine and the gateway.
@@ -679,7 +699,7 @@ fn row(d: &Device, show_mac: bool, verbose: bool) -> Vec<Field> {
         _ => kind,
     };
     let mut row = vec![
-        Field::new(Some(&d.ip.to_string())).fg(Color::Green),
+        Field::new(Some(&d.ip.to_string())).fg(ip_color(d)),
         // Real names are bold; a backfilled vendor isn't, so the two stay distinguishable.
         match (d.name.as_deref(), d.vendor) {
             (Some(n), _) => Field::new(Some(n)).bold(),

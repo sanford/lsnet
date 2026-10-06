@@ -3,7 +3,7 @@
 
 use crate::http;
 use ipnetwork::Ipv4Network;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::time::Duration;
@@ -15,7 +15,8 @@ const SSDP: (Ipv4Addr, u16) = (Ipv4Addr::new(239, 255, 255, 250), 1900);
 const SEARCH: &str = "M-SEARCH * HTTP/1.1\r\nHOST: 239.255.255.250:1900\r\n\
     MAN: \"ssdp:discover\"\r\nMX: 1\r\nST: ssdp:all\r\n\r\n";
 
-#[derive(Default, Clone, Serialize)]
+#[derive(Default, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct SsdpInfo {
     pub server: Option<String>,
     pub friendly_name: Option<String>,
@@ -23,6 +24,10 @@ pub struct SsdpInfo {
     pub model_name: Option<String>,
     pub model_number: Option<String>,
     pub device_type: Option<String>,
+    /// The device's permanent UPnP identifier, e.g. `uuid:4d696e69-…`. A
+    /// router's tells its network apart from others with the same addresses.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub udn: Option<String>,
 }
 
 /// Collect responses for `wait`, fetching each device's description as soon
@@ -151,14 +156,26 @@ async fn collect(
             continue;
         };
         let info = out.entry(ip).or_default();
-        let x = &resp.body;
-        info.friendly_name = http::tag(x, "friendlyName");
-        info.manufacturer = http::tag(x, "manufacturer");
-        info.model_name = http::tag(x, "modelName");
-        info.model_number = http::tag(x, "modelNumber");
-        info.device_type = http::tag(x, "deviceType");
+        *info = SsdpInfo {
+            server: info.server.take(),
+            ..parse_description(&resp.body)
+        };
     }
     out
+}
+
+/// What a UPnP description says about the device. A root device describes
+/// itself first, before any embedded devices, so the first of each tag is its own.
+fn parse_description(xml: &str) -> SsdpInfo {
+    SsdpInfo {
+        server: None,
+        friendly_name: http::tag(xml, "friendlyName"),
+        manufacturer: http::tag(xml, "manufacturer"),
+        model_name: http::tag(xml, "modelName"),
+        model_number: http::tag(xml, "modelNumber"),
+        device_type: http::tag(xml, "deviceType"),
+        udn: http::tag(xml, "UDN"),
+    }
 }
 
 /// Where to fetch a responder's description, if its LOCATION is safe to follow.
@@ -186,6 +203,43 @@ mod tests {
         let s = unicast_search("192.168.1.57".parse().unwrap());
         assert!(s.starts_with("M-SEARCH * HTTP/1.1\r\nHOST: 192.168.1.57:1900\r\n"));
         assert!(s.ends_with("ST: upnp:rootdevice\r\n\r\n"));
+    }
+
+    #[test]
+    fn reads_the_root_device_from_a_description() {
+        // A router's description, trimmed: the root device, then an embedded one.
+        let xml = r#"<?xml version="1.0"?>
+<root xmlns="urn:schemas-upnp-org:device-1-0">
+  <specVersion><major>1</major><minor>0</minor></specVersion>
+  <device>
+    <deviceType>urn:schemas-upnp-org:device:InternetGatewayDevice:1</deviceType>
+    <friendlyName>Home Router</friendlyName>
+    <manufacturer>NETGEAR</manufacturer>
+    <modelName>RAX50</modelName>
+    <modelNumber>v2</modelNumber>
+    <UDN>uuid:4d696e69-444c-164e-9d41-001ec92f0001</UDN>
+    <deviceList>
+      <device>
+        <deviceType>urn:schemas-upnp-org:device:WANDevice:1</deviceType>
+        <friendlyName>WANDevice</friendlyName>
+      </device>
+    </deviceList>
+  </device>
+</root>"#;
+        let info = parse_description(xml);
+        assert_eq!(info.friendly_name.as_deref(), Some("Home Router"));
+        assert_eq!(info.manufacturer.as_deref(), Some("NETGEAR"));
+        assert_eq!(info.model_name.as_deref(), Some("RAX50"));
+        assert_eq!(info.model_number.as_deref(), Some("v2"));
+        assert_eq!(
+            info.device_type.as_deref(),
+            Some("urn:schemas-upnp-org:device:InternetGatewayDevice:1")
+        );
+        assert_eq!(
+            info.udn.as_deref(),
+            Some("uuid:4d696e69-444c-164e-9d41-001ec92f0001")
+        );
+        assert_eq!(parse_description("<html>404</html>").manufacturer, None);
     }
 
     #[test]

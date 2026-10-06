@@ -814,6 +814,7 @@ dependencies = [
  "serde",
  "serde_json",
  "simple-dns",
+ "socket2",
  "tokio",
  "windows-sys",
 ]

@@ -12,7 +12,7 @@
 //! name even when it never advertises it: Home Assistant, for one, announces
 //! its service under a random hex host but answers to `homeassistant.local`.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use simple_dns::rdata::RData;
 use simple_dns::{CLASS, Name, Packet, QCLASS, Question, TYPE};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -66,6 +66,12 @@ const SERVICE_TYPES: &[&str] = &[
     "_scanner._tcp.local",
     "_matterc._udp.local",
     "_elg._tcp.local",
+    // Dante and NDI, asked for by name since not every embedded responder
+    // answers the meta-query. Every Dante device runs _netaudio-cmc;
+    // _netaudio-arc only where routing is on.
+    "_netaudio-arc._udp.local",
+    "_netaudio-cmc._udp.local",
+    "_ndi._tcp.local",
 ];
 
 /// TXT keys that carry model or identity information; everything else is noise.
@@ -88,7 +94,8 @@ const TXT_KEYS: &[&str] = &[
     "n",
 ];
 
-#[derive(Default, Clone, Serialize)]
+#[derive(Default, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct MdnsInfo {
     /// The device's primary host name, e.g. `living-room.local`.
     pub hostname: Option<String>,
@@ -102,17 +109,28 @@ pub struct MdnsInfo {
     /// A MAC address one of its service names gave away (see `instance_mac`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mac: Option<String>,
+    /// Whether a reply came from this address itself, which shows the device
+    /// is on this network segment and using it. Other addresses are only
+    /// what someone said: a device listing all of its addresses, a Bonjour
+    /// Sleep Proxy answering for a sleeping Mac, or Dante publishing where
+    /// its multicast audio comes from.
+    #[serde(skip)]
+    pub heard_from: bool,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct Records {
     /// instance (lowercased) → (display name, packet source)
     instances: HashMap<String, (String, Ipv4Addr)>,
     /// instance → (target host, port)
     srv: HashMap<String, (String, u16)>,
     txt: HashMap<String, BTreeMap<String, String>>,
-    a: HashMap<String, Ipv4Addr>,
+    /// host → its addresses, in the order announced. Multi-homed devices
+    /// (a Dante interface's secondary port, say) list more than one.
+    a: HashMap<String, Vec<Ipv4Addr>>,
     types: HashSet<String>,
+    /// Every address a reply came from.
+    senders: HashSet<Ipv4Addr>,
     /// Answers to reverse lookups: address → the name the device calls itself.
     reverse: HashMap<Ipv4Addr, String>,
 }
@@ -186,6 +204,7 @@ async fn send_queries(sock: &UdpSocket, types: &[String]) {
 }
 
 fn absorb(rec: &mut Records, packet: &Packet, src: Ipv4Addr) {
+    rec.senders.insert(src);
     let records = packet.answers.iter().chain(&packet.additional_records);
     for r in records {
         let owner = r.name.to_string();
@@ -223,7 +242,11 @@ fn absorb(rec: &mut Records, packet: &Packet, src: Ipv4Addr) {
                 }
             }
             RData::A(a) => {
-                rec.a.insert(key, Ipv4Addr::from(a.address));
+                let addrs = rec.a.entry(key).or_default();
+                let ip = Ipv4Addr::from(a.address);
+                if !addrs.contains(&ip) {
+                    addrs.push(ip);
+                }
             }
             _ => {}
         }
@@ -311,6 +334,64 @@ fn instance_mac(service: &str, instance: &str) -> (String, Option<String>) {
     }
 }
 
+/// What's been overheard on port 5353, accumulated: announcements, and
+/// answers to other machines' questions.
+#[derive(Default)]
+pub struct Overheard {
+    rec: Records,
+}
+
+impl Overheard {
+    pub fn absorb(&mut self, packet: &[u8], src: Ipv4Addr) {
+        if let Ok(packet) = Packet::parse(packet) {
+            absorb(&mut self.rec, &packet, src);
+        }
+    }
+
+    /// Everything heard so far, per device, as `discover` would report it.
+    pub fn resolve(&self) -> HashMap<Ipv4Addr, MdnsInfo> {
+        resolve(self.rec.clone())
+    }
+}
+
+/// Listen on the mDNS port alongside the system's own responder (Bonjour,
+/// Avahi), passing each packet and its sender to `heard` until it returns
+/// false or `stop` is set. False if the port can't be shared.
+pub fn listen(
+    local_ip: Ipv4Addr,
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    mut heard: impl FnMut(Ipv4Addr, &[u8]) -> bool + Send + 'static,
+) -> bool {
+    use socket2::{Domain, Protocol, Socket, Type};
+    use std::sync::atomic::Ordering;
+    let open = || -> std::io::Result<std::net::UdpSocket> {
+        let sock = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
+        // Both, so the system's responder keeps working and so do we.
+        sock.set_reuse_address(true)?;
+        #[cfg(unix)]
+        sock.set_reuse_port(true)?;
+        sock.bind(&std::net::SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, MDNS.1).into())?;
+        sock.join_multicast_v4(&MDNS.0, &local_ip)?;
+        sock.set_read_timeout(Some(std::time::Duration::from_millis(250)))?;
+        Ok(sock.into())
+    };
+    let Ok(sock) = open() else {
+        return false;
+    };
+    std::thread::spawn(move || {
+        let mut buf = vec![0u8; 9000];
+        while !stop.load(Ordering::Relaxed) {
+            let Ok((n, std::net::SocketAddr::V4(src))) = sock.recv_from(&mut buf) else {
+                continue;
+            };
+            if !heard(*src.ip(), &buf[..n]) {
+                break;
+            }
+        }
+    });
+    true
+}
+
 fn resolve(rec: Records) -> HashMap<Ipv4Addr, MdnsInfo> {
     let mut out: HashMap<Ipv4Addr, MdnsInfo> = HashMap::new();
     for (key, (display, src)) in &rec.instances {
@@ -319,23 +400,34 @@ fn resolve(rec: Records) -> HashMap<Ipv4Addr, MdnsInfo> {
         };
         let (instance, mac) = instance_mac(&service, &instance);
         let srv = rec.srv.get(key);
-        let ip = srv.and_then(|(h, _)| rec.a.get(h)).copied().unwrap_or(*src);
-        let info = out.entry(ip).or_default();
-        if info.mac.is_none() {
-            info.mac = mac;
-        }
-        if let Some((h, port)) = srv {
-            info.hostname.get_or_insert_with(|| h.clone());
-            info.ports.insert(service.clone(), *port);
-        }
-        info.services.insert(service.clone(), instance);
-        if let Some(kv) = rec.txt.get(key) {
-            info.txt.entry(service).or_default().extend(kv.clone());
+        // Every address of the host offering it: a machine on Wi-Fi and
+        // Ethernet at once is the same device at both. Addresses off this
+        // network count only if a reply came from them (see `heard_from`).
+        let addrs = srv
+            .and_then(|(h, _)| rec.a.get(h))
+            .cloned()
+            .unwrap_or_else(|| vec![*src]);
+        for ip in addrs {
+            let info = out.entry(ip).or_default();
+            if info.mac.is_none() {
+                info.mac = mac.clone();
+            }
+            if let Some((h, port)) = srv {
+                info.hostname.get_or_insert_with(|| h.clone());
+                info.ports.insert(service.clone(), *port);
+            }
+            info.services.insert(service.clone(), instance.clone());
+            if let Some(kv) = rec.txt.get(key) {
+                info.txt
+                    .entry(service.clone())
+                    .or_default()
+                    .extend(kv.clone());
+            }
         }
     }
     // Hosts that only answered with an address record still count.
-    for (host, ip) in &rec.a {
-        let info = out.entry(*ip).or_default();
+    for (host, addrs) in &rec.a {
+        let info = out.entry(pick(addrs, &rec.senders)).or_default();
         info.hostname.get_or_insert_with(|| host.clone());
     }
     // The name a device gives for its own address is its primary one, and
@@ -343,7 +435,62 @@ fn resolve(rec: Records) -> HashMap<Ipv4Addr, MdnsInfo> {
     for (ip, name) in rec.reverse {
         out.entry(ip).or_default().hostname = Some(name);
     }
+    for (ip, info) in &mut out {
+        info.heard_from = rec.senders.contains(ip);
+    }
     out
+}
+
+/// Which of the addresses a name has to credit with it: one a reply came
+/// from, else the first announced.
+fn pick(addrs: &[Ipv4Addr], senders: &HashSet<Ipv4Addr>) -> Ipv4Addr {
+    addrs
+        .iter()
+        .copied()
+        .find(|a| senders.contains(a))
+        .unwrap_or(addrs[0])
+}
+
+/// Add what `more` says to `info`. Returns whether anything was new.
+pub fn merge(info: &mut Option<MdnsInfo>, more: MdnsInfo) -> bool {
+    let Some(info) = info else {
+        *info = Some(more);
+        return true;
+    };
+    let before = (
+        info.services.len(),
+        info.txt.values().map(BTreeMap::len).sum::<usize>(),
+        info.ports.len(),
+        info.hostname.is_some(),
+        info.mac.is_some(),
+    );
+    for (svc, instance) in more.services {
+        info.services.entry(svc).or_insert(instance);
+    }
+    for (svc, kv) in more.txt {
+        let txt = info.txt.entry(svc).or_default();
+        for (k, v) in kv {
+            txt.entry(k).or_insert(v);
+        }
+    }
+    for (svc, port) in more.ports {
+        info.ports.entry(svc).or_insert(port);
+    }
+    if info.hostname.is_none() {
+        info.hostname = more.hostname;
+    }
+    if info.mac.is_none() {
+        info.mac = more.mac;
+    }
+    info.heard_from |= more.heard_from;
+    let after = (
+        info.services.len(),
+        info.txt.values().map(BTreeMap::len).sum::<usize>(),
+        info.ports.len(),
+        info.hostname.is_some(),
+        info.mac.is_some(),
+    );
+    before != after
 }
 
 #[cfg(test)]
@@ -381,6 +528,265 @@ mod tests {
             ("pi [not a mac]".into(), None)
         );
         assert_eq!(instance_mac("airplay", "6C4A85D1E0F2@Living Room").1, None);
+    }
+
+    use simple_dns::rdata::{A, PTR, SRV, TXT};
+    use simple_dns::{Label, ResourceRecord};
+
+    const SPROXY: Ipv4Addr = Ipv4Addr::new(192, 168, 1, 5);
+
+    fn rr<'a>(name: Name<'a>, rdata: RData<'a>) -> ResourceRecord<'a> {
+        ResourceRecord::new(name, CLASS::IN, 120, rdata)
+    }
+
+    fn a(host: &str, ip: Ipv4Addr) -> ResourceRecord<'_> {
+        rr(
+            Name::new_unchecked(host),
+            RData::A(A { address: ip.into() }),
+        )
+    }
+
+    /// Parse `records` as one reply from `src`, the way `discover` does.
+    fn heard(src: Ipv4Addr, records: Vec<ResourceRecord>) -> HashMap<Ipv4Addr, MdnsInfo> {
+        let mut packet = Packet::new_reply(0);
+        packet.answers = records;
+        let bytes = packet.build_bytes_vec().unwrap();
+        let mut rec = Records::default();
+        absorb(&mut rec, &Packet::parse(&bytes).unwrap(), src);
+        resolve(rec)
+    }
+
+    #[test]
+    fn credits_the_srv_target_not_the_sender() {
+        // A Bonjour Sleep Proxy (an Apple TV) answering for a sleeping Mac.
+        let mac = Ipv4Addr::new(192, 168, 1, 42);
+        let instance = "Studio._airplay._tcp.local";
+        let out = heard(
+            SPROXY,
+            vec![
+                rr(
+                    Name::new_unchecked("_airplay._tcp.local"),
+                    RData::PTR(PTR(Name::new_unchecked(instance))),
+                ),
+                rr(
+                    Name::new_unchecked(instance),
+                    RData::SRV(SRV {
+                        priority: 0,
+                        weight: 0,
+                        port: 7000,
+                        target: Name::new_unchecked("Studio-Mac.local"),
+                    }),
+                ),
+                a("Studio-Mac.local", mac),
+            ],
+        );
+        assert!(!out.contains_key(&SPROXY));
+        let info = &out[&mac];
+        assert_eq!(info.services["airplay"], "Studio");
+        assert_eq!(info.ports["airplay"], 7000);
+        assert_eq!(info.hostname.as_deref(), Some("studio-mac.local"));
+    }
+
+    #[test]
+    fn credits_every_address_of_a_multi_homed_device() {
+        // A Dante device with its secondary port on a link-local address.
+        let dante = Ipv4Addr::new(192, 168, 1, 77);
+        let instance = "Stagebox._netaudio-arc._udp.local";
+        let out = heard(
+            dante,
+            vec![
+                rr(
+                    Name::new_unchecked(instance),
+                    RData::SRV(SRV {
+                        priority: 0,
+                        weight: 0,
+                        port: 4440,
+                        target: Name::new_unchecked("Stagebox.local"),
+                    }),
+                ),
+                a("Stagebox.local", Ipv4Addr::new(169, 254, 9, 9)),
+                a("Stagebox.local", dante),
+            ],
+        );
+        assert_eq!(out[&dante].services["netaudio-arc"], "Stagebox");
+        assert!(out[&dante].heard_from);
+        // Its other address has the same services, but no reply came from
+        // it, so it's not taken as a device on this segment.
+        let secondary = &out[&Ipv4Addr::new(169, 254, 9, 9)];
+        assert_eq!(secondary.services["netaudio-arc"], "Stagebox");
+        assert!(!secondary.heard_from);
+    }
+
+    #[test]
+    fn only_the_sender_was_heard_from() {
+        // Dante names a record after each multicast flow, whose address is
+        // the transmitter, on another network.
+        let dante = Ipv4Addr::new(192, 168, 1, 77);
+        let transmitter = Ipv4Addr::new(10, 0, 0, 12);
+        let out = heard(dante, vec![a("10.0.255.239.in-addr.local", transmitter)]);
+        assert!(!out[&transmitter].heard_from);
+    }
+
+    #[test]
+    fn falls_back_to_the_sender_without_an_address() {
+        let out = heard(
+            SPROXY,
+            vec![rr(
+                Name::new_unchecked("_hap._tcp.local"),
+                RData::PTR(PTR(Name::new_unchecked("Plug._hap._tcp.local"))),
+            )],
+        );
+        assert_eq!(out[&SPROXY].services["hap"], "Plug");
+    }
+
+    #[test]
+    fn a_reverse_answer_names_the_device() {
+        let ha = Ipv4Addr::new(192, 168, 1, 130);
+        let instance = "Home._home-assistant._tcp.local";
+        let out = heard(
+            ha,
+            vec![
+                rr(
+                    Name::new_unchecked(instance),
+                    RData::SRV(SRV {
+                        priority: 0,
+                        weight: 0,
+                        port: 8123,
+                        target: Name::new_unchecked("36814e2569ca121f.local"),
+                    }),
+                ),
+                a("36814e2569ca121f.local", ha),
+                rr(
+                    Name::new_unchecked("130.1.168.192.in-addr.arpa"),
+                    RData::PTR(PTR(Name::new_unchecked("homeassistant.local"))),
+                ),
+            ],
+        );
+        assert_eq!(out[&ha].hostname.as_deref(), Some("homeassistant.local"));
+    }
+
+    #[test]
+    fn keeps_only_identifying_txt_keys() {
+        let tv = Ipv4Addr::new(192, 168, 1, 52);
+        let instance = "Living Room._airplay._tcp.local";
+        let txt = TXT::new()
+            .with_string("model=AppleTV14,1")
+            .unwrap()
+            .with_string("features=0x4A7FDFD5,0xBC157FDE")
+            .unwrap()
+            .with_string("fn=")
+            .unwrap();
+        let out = heard(tv, vec![rr(Name::new_unchecked(instance), RData::TXT(txt))]);
+        let txt = &out[&tv].txt["airplay"];
+        assert_eq!(txt.len(), 1);
+        assert_eq!(txt["model"], "AppleTV14,1");
+    }
+
+    #[test]
+    fn instance_names_may_contain_dots() {
+        // NDI names sources after the machine, which on a Mac ends ".LOCAL".
+        let src = Ipv4Addr::new(192, 168, 1, 31);
+        let instance = Name::new_with_labels(&[
+            Label::new_unchecked("STAGE-MBP.LOCAL (Scan Converter)".as_bytes()),
+            Label::new_unchecked("_ndi".as_bytes()),
+            Label::new_unchecked("_tcp".as_bytes()),
+            Label::new_unchecked("local".as_bytes()),
+        ]);
+        let out = heard(
+            src,
+            vec![rr(
+                Name::new_unchecked("_ndi._tcp.local"),
+                RData::PTR(PTR(instance)),
+            )],
+        );
+        assert_eq!(
+            out[&src].services["ndi"],
+            "STAGE-MBP.LOCAL (Scan Converter)"
+        );
+    }
+
+    #[test]
+    fn merges_only_what_is_new() {
+        let mut info = None;
+        let mut first = MdnsInfo::default();
+        first
+            .services
+            .insert("airplay".into(), "Living Room".into());
+        assert!(merge(&mut info, first.clone()));
+        assert!(!merge(&mut info, first));
+        let mut more = MdnsInfo::default();
+        more.services.insert("airplay".into(), "Renamed".into());
+        more.services
+            .insert("raop".into(), "AABBCCDDEEFF@Living Room".into());
+        assert!(merge(&mut info, more));
+        let info = info.unwrap();
+        // What was heard first stays.
+        assert_eq!(info.services["airplay"], "Living Room");
+        assert_eq!(info.services.len(), 2);
+    }
+
+    #[test]
+    fn overheard_packets_accumulate() {
+        let tv = Ipv4Addr::new(192, 168, 1, 52);
+        let instance = "Living Room._airplay._tcp.local";
+        let mut packet = Packet::new_reply(0);
+        packet.answers = vec![rr(
+            Name::new_unchecked("_airplay._tcp.local"),
+            RData::PTR(PTR(Name::new_unchecked(instance))),
+        )];
+        let mut heard = Overheard::default();
+        heard.absorb(&packet.build_bytes_vec().unwrap(), tv);
+        heard.absorb(b"not a DNS packet", tv);
+        let out = heard.resolve();
+        assert_eq!(out[&tv].services["airplay"], "Living Room");
+        assert!(out[&tv].heard_from);
+    }
+
+    /// Shares port 5353 with the system's responder and hears multicast on
+    /// it. Needs a network interface with multicast, so it's run by hand:
+    /// `cargo test -- --ignored`.
+    #[test]
+    #[ignore]
+    fn listens_alongside_the_system_responder() {
+        use std::sync::Arc;
+        use std::sync::atomic::AtomicBool;
+        let local = local_ip();
+        let stop = Arc::new(AtomicBool::new(false));
+        let (tx, rx) = std::sync::mpsc::channel();
+        assert!(listen(local, stop.clone(), move |src, packet| {
+            tx.send((src, packet.to_vec())).is_ok()
+        }));
+        let mut packet = Packet::new_reply(0);
+        packet.answers = vec![rr(
+            Name::new_unchecked("_lsnet-test._tcp.local"),
+            RData::PTR(PTR(Name::new_unchecked("probe._lsnet-test._tcp.local"))),
+        )];
+        let bytes = packet.build_bytes_vec().unwrap();
+        let sock = std::net::UdpSocket::bind((local, 0)).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        let heard = loop {
+            sock.send_to(&bytes, MDNS).unwrap();
+            if let Ok((src, got)) = rx.recv_timeout(std::time::Duration::from_millis(200))
+                && got == bytes
+            {
+                break Some(src);
+            }
+            if std::time::Instant::now() > deadline {
+                break None;
+            }
+        };
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        assert_eq!(heard, Some(local));
+    }
+
+    /// The address this machine reaches the internet from.
+    fn local_ip() -> Ipv4Addr {
+        let sock = std::net::UdpSocket::bind("0.0.0.0:0").unwrap();
+        sock.connect("1.1.1.1:53").unwrap();
+        match sock.local_addr().unwrap().ip() {
+            std::net::IpAddr::V4(ip) => ip,
+            _ => panic!("no IPv4 address"),
+        }
     }
 
     #[test]

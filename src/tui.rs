@@ -1,8 +1,11 @@
 //! Interactive browser: a scrolling list of devices, or of the services they
 //! run, beside the full details of whichever device is selected.
 
+use crate::arp::Flag;
+use crate::history::{self, Change};
+use crate::live::{Feed, Update};
 use crate::services::{self, Service, port_name};
-use crate::{Device, NOISY_SERVICES, Scan, animate, kind_label};
+use crate::{Device, NOISY_SERVICES, PING, Scan, change_words, ip_alarm, kind_label};
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
@@ -15,6 +18,7 @@ use ratatui::{DefaultTerminal, Frame};
 use std::io::Write;
 use std::net::Ipv4Addr;
 use std::process::{Command, Stdio};
+use std::sync::mpsc::TryRecvError;
 use std::time::{Duration, Instant};
 
 /// Below this width the details go under the list instead of beside it.
@@ -37,21 +41,21 @@ const KEYS: &[(&str, &str)] = &[
     ("/", "Filter the list"),
     ("Esc", "Clear the filter, or quit"),
     ("r", "Scan again"),
+    ("+ → ~ -", "New, moved, renamed, missing since last time"),
     ("h  ?", "Show this help"),
     ("q  Ctrl-c", "Quit"),
 ];
 
 /// Browse until the user quits, returning the latest scan and whether the
 /// services view was showing.
-pub fn run(
-    scan: impl Fn() -> Result<Scan, String> + Sync,
-    show_services: bool,
-) -> Result<(Scan, bool), String> {
+pub fn run(start: impl Fn() -> Feed, show_services: bool) -> Result<(Scan, bool), String> {
     let mut terminal = ratatui::init();
-    let result = App::start(&mut terminal, &scan, show_services).and_then(|mut app| {
-        app.run(&mut terminal, &scan)
-            .map(|()| (app.scan, app.show_services))
-    });
+    let mut app = App::new(Scan::empty(), show_services);
+    app.feed = Some(start());
+    app.has_results = false;
+    let result = app
+        .run(&mut terminal, &start)
+        .map(|()| (app.scan, app.show_services));
     ratatui::restore();
     result
 }
@@ -71,15 +75,17 @@ struct App {
     detail_lines: u16,
     flash: Option<(String, Instant)>,
     show_help: bool,
+    /// Where results come from, while a scan runs or listens.
+    feed: Option<Feed>,
+    /// What the scan is doing, e.g. "waiting for ports 43%".
+    status: String,
+    /// Whether any results have arrived yet.
+    has_results: bool,
+    started: Instant,
 }
 
 impl App {
-    fn start(
-        terminal: &mut DefaultTerminal,
-        scan: &(impl Fn() -> Result<Scan, String> + Sync),
-        show_services: bool,
-    ) -> Result<App, String> {
-        let scan = animate(scan, |ping| draw_scanning(terminal, ping))?;
+    fn new(scan: Scan, show_services: bool) -> App {
         let mut app = App {
             services: services::list(&scan.devices),
             show_services,
@@ -93,17 +99,53 @@ impl App {
             detail_lines: 0,
             flash: None,
             show_help: false,
+            feed: None,
+            status: String::new(),
+            has_results: true,
+            started: Instant::now(),
         };
         app.refilter(None);
-        Ok(app)
+        app
+    }
+
+    /// Take in whatever the scan has sent since last time.
+    fn receive(&mut self) -> Result<(), String> {
+        while let Some(feed) = &self.feed {
+            let update = match feed.updates.try_recv() {
+                Ok(u) => u,
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => {
+                    self.feed = None;
+                    self.status.clear();
+                    break;
+                }
+            };
+            match update {
+                Update::Status(s) => self.status = s,
+                Update::Scan(scan) => {
+                    let keep = self.selected_key();
+                    self.services = services::list(&scan.devices);
+                    self.scan = scan;
+                    self.has_results = true;
+                    self.refilter(keep);
+                }
+                Update::Failed(e) if !self.has_results => return Err(e),
+                Update::Failed(e) => {
+                    self.flash = Some((format!("Rescan failed: {e}"), Instant::now()));
+                    self.status.clear();
+                }
+            }
+        }
+        Ok(())
     }
 
     fn run(
         &mut self,
         terminal: &mut DefaultTerminal,
-        scan: &(impl Fn() -> Result<Scan, String> + Sync),
+        start: &impl Fn() -> Feed,
     ) -> Result<(), String> {
         loop {
+            self.receive()?;
             if self
                 .flash
                 .as_ref()
@@ -112,8 +154,9 @@ impl App {
                 self.flash = None;
             }
             terminal.draw(|f| self.draw(f)).map_err(|e| e.to_string())?;
-            // Wake up now and then so a flashed message can expire.
-            if !event::poll(Duration::from_millis(250)).map_err(|e| e.to_string())? {
+            // Wake up now and then for the scan's news, the ping animation
+            // and a flashed message expiring.
+            if !event::poll(Duration::from_millis(120)).map_err(|e| e.to_string())? {
                 continue;
             }
             let Event::Key(key) = event::read().map_err(|e| e.to_string())? else {
@@ -175,22 +218,9 @@ impl App {
                 }
                 KeyCode::Char('h' | '?') => self.show_help = true,
                 KeyCode::Char('r') => {
-                    let result = animate(scan, |ping| {
-                        self.flash = Some((format!("{ping}  Scanning…"), Instant::now()));
-                        let _ = terminal.draw(|f| self.draw(f));
-                    });
-                    match result {
-                        Ok(s) => {
-                            let keep = self.selected_key();
-                            self.services = services::list(&s.devices);
-                            self.scan = s;
-                            self.refilter(keep);
-                            self.flash = None;
-                        }
-                        Err(e) => {
-                            self.flash = Some((format!("Rescan failed: {e}"), Instant::now()))
-                        }
-                    }
+                    // The old scan stops listening when its feed is dropped.
+                    self.feed = Some(start());
+                    self.status = "scanning again".into();
                 }
                 _ => {}
             }
@@ -328,31 +358,35 @@ impl App {
     }
 
     fn draw(&mut self, f: &mut Frame) {
-        let notes = self.scan.notes.len() as u16;
+        if !self.has_results {
+            self.draw_scanning(f);
+            return;
+        }
+        let notes: Vec<&String> = self.scan.changes.iter().chain(&self.scan.notes).collect();
         let [header, body, footer] = Layout::vertical([
-            Constraint::Length(1 + notes),
+            Constraint::Length(1 + notes.len() as u16),
             Constraint::Fill(1),
             Constraint::Length(1),
         ])
         .areas(f.area());
 
-        let mut head = vec![Line::from(vec![
+        let mut summary = vec![
             " lsnet ".bold(),
             Span::raw(" "),
             Span::raw(self.scan.summary.clone()).dim(),
-        ])];
-        head.extend(
-            self.scan
-                .notes
-                .iter()
-                .map(|n| Line::from(format!(" {n}")).dim()),
-        );
+        ];
+        if !self.status.is_empty() {
+            summary.push(Span::raw(format!(" · {}", self.status)).cyan());
+        }
+        let mut head = vec![Line::from(summary)];
+        head.extend(notes.iter().map(|n| Line::from(format!(" {n}")).dim()));
         f.render_widget(Paragraph::new(head), header);
 
         let [list, detail] = if body.width >= SIDE_BY_SIDE {
             // As wide as the list needs, up to 60%; details get the rest.
             let (first, name, last) = self.column_widths();
-            let list = 2 + 2 + first + 1 + name + 1 + last;
+            let marks = if self.show_marks() { 2 } else { 0 };
+            let list = 2 + 2 + marks + first + 1 + name + 1 + last;
             Layout::horizontal([
                 Constraint::Length(list.min(body.width * 6 / 10)),
                 Constraint::Fill(1),
@@ -405,11 +439,55 @@ impl App {
         }
     }
 
+    /// Whether the device list has a column for what changed since last time.
+    fn show_marks(&self) -> bool {
+        !self.show_services && self.scan.devices.iter().any(|d| !d.changes.is_empty())
+    }
+
+    /// The ping animation and what the scan is waiting for, until the first
+    /// results arrive.
+    fn draw_scanning(&self, f: &mut Frame) {
+        let frame = (self.started.elapsed().as_millis() / 120) as usize % PING.len();
+        let lines = [
+            format!("{}  Scanning the network…", PING[frame]),
+            self.status.clone(),
+        ];
+        let area = f.area();
+        for (i, text) in lines.iter().enumerate() {
+            let width = text.chars().count() as u16;
+            let at = Rect {
+                x: area.x + area.width.saturating_sub(width) / 2,
+                y: area.y + area.height / 2 + i as u16,
+                width: width.min(area.width),
+                height: 1.min(area.height),
+            };
+            if at.y < area.y + area.height {
+                f.render_widget(Paragraph::new(text.as_str()).dim(), at);
+            }
+        }
+    }
+
     fn list_title(&self, what: &str, total: usize) -> String {
-        if self.filter.is_empty() {
-            format!(" {what} ({}) ", self.visible.len())
+        // Devices that didn't answer are counted apart.
+        let missing = |rows: &mut dyn Iterator<Item = usize>| {
+            if self.show_services {
+                0
+            } else {
+                rows.filter(|&i| self.scan.devices[i].missing()).count()
+            }
+        };
+        let shown_missing = missing(&mut self.visible.iter().copied());
+        let all_missing = missing(&mut (0..total));
+        let shown = self.visible.len() - shown_missing;
+        let count = if self.filter.is_empty() {
+            shown.to_string()
         } else {
-            format!(" {what} ({} of {total}) ", self.visible.len())
+            format!("{shown} of {}", total - all_missing)
+        };
+        if shown_missing > 0 {
+            format!(" {what} ({count} · {shown_missing} missing) ")
+        } else {
+            format!(" {what} ({count}) ")
         }
     }
 
@@ -439,6 +517,7 @@ impl App {
     fn draw_list(&mut self, f: &mut Frame, area: Rect) {
         // TYPE gets the room it needs; NAME takes whatever is left.
         let (_, _, type_width) = self.column_widths();
+        let marks = self.show_marks();
         let rows = self.visible.iter().map(|&i| {
             let d = &self.scan.devices[i];
             let kind_style = match (d.this_device, d.gateway) {
@@ -446,24 +525,33 @@ impl App {
                 (_, true) => Style::new().yellow(),
                 _ => Style::new(),
             };
-            Row::new([
-                Cell::from(d.ip.to_string()).green(),
+            let mut cells = vec![
+                Cell::from(d.ip.to_string()).style(ip_style(d)),
                 Cell::from(list_name(d)),
                 Cell::from(kind_label(d).unwrap_or_default()).style(kind_style),
-            ])
+            ];
+            if marks {
+                cells.insert(0, Cell::from(marker(d)).yellow());
+            }
+            let row = Row::new(cells);
+            // Devices that didn't answer this time are only a memory.
+            if d.missing() { row.dark_gray() } else { row }
         });
-        let table = Table::new(
-            rows,
-            [
-                Constraint::Length(15),
-                Constraint::Fill(1),
-                Constraint::Length(type_width),
-            ],
-        )
-        .header(Row::new(["IP", "NAME", "TYPE"]).bold())
-        .block(Block::bordered().title(self.list_title("Devices", self.scan.devices.len())))
-        .row_highlight_style(Style::new().add_modifier(Modifier::REVERSED))
-        .highlight_symbol("› ");
+        let mut widths = vec![
+            Constraint::Length(15),
+            Constraint::Fill(1),
+            Constraint::Length(type_width),
+        ];
+        let mut header = vec!["IP", "NAME", "TYPE"];
+        if marks {
+            widths.insert(0, Constraint::Length(1));
+            header.insert(0, "");
+        }
+        let table = Table::new(rows, widths)
+            .header(Row::new(header).bold())
+            .block(Block::bordered().title(self.list_title("Devices", self.scan.devices.len())))
+            .row_highlight_style(Style::new().add_modifier(Modifier::REVERSED))
+            .highlight_symbol("› ");
         f.render_stateful_widget(table, area, &mut self.table);
     }
 
@@ -594,6 +682,61 @@ fn emacs(key: KeyEvent) -> KeyEvent {
     KeyEvent::new(code, KeyModifiers::NONE)
 }
 
+/// The browser as plain text, `width` wide and at least `height` tall, with
+/// the row for `key` selected: the screens the README shows. It grows until
+/// the details fit, so there's no scrollbar.
+#[cfg(test)]
+pub fn screen(
+    scan: Scan,
+    show_services: bool,
+    key: (Ipv4Addr, Option<u16>),
+    width: u16,
+    mut height: u16,
+) -> String {
+    let mut app = App::new(scan, show_services);
+    let row = (0..app.visible.len())
+        .find(|&i| app.row_key(i) == key)
+        .expect("the row to select is listed");
+    app.select(row);
+    let mut terminal = loop {
+        let backend = ratatui::backend::TestBackend::new(width, height);
+        let mut terminal = ratatui::Terminal::new(backend).expect("a test terminal");
+        terminal.draw(|f| app.draw(f)).expect("drawn");
+        if app.detail_lines <= app.detail_height {
+            break terminal;
+        }
+        height += app.detail_lines - app.detail_height;
+    };
+    let buffer = terminal.backend_mut().buffer().clone();
+    let mut out = String::new();
+    for y in 0..height {
+        let line: String = (0..width).map(|x| buffer[(x, y)].symbol()).collect();
+        out.push_str(line.trim_end());
+        out.push('\n');
+    }
+    out
+}
+
+/// The device list's mark for what changed since last time.
+fn marker(d: &Device) -> &'static str {
+    match d.changes.first() {
+        Some(Change::New) => "+",
+        Some(Change::Moved { .. }) => "→",
+        Some(Change::Renamed { .. }) => "~",
+        Some(Change::Missing) => "-",
+        None => "",
+    }
+}
+
+/// Green, unless something is wrong with the address.
+fn ip_style(d: &Device) -> Style {
+    match ip_alarm(d) {
+        Some(Flag::AddressConflict) => Style::new().red(),
+        Some(_) => Style::new().yellow(),
+        None => Style::new().green(),
+    }
+}
+
 /// A device's name for the list, falling back to its hostname, then its vendor.
 fn list_name(d: &Device) -> Span<'static> {
     match (&d.name, &d.hostname, d.vendor) {
@@ -602,21 +745,6 @@ fn list_name(d: &Device) -> Span<'static> {
         (None, None, Some(v)) => Span::raw(v).dim(),
         (None, None, None) => Span::raw("·").dark_gray(),
     }
-}
-
-fn draw_scanning(terminal: &mut DefaultTerminal, ping: &str) {
-    let _ = terminal.draw(|f| {
-        let text = format!("{ping}  Scanning the network…");
-        let width = text.chars().count() as u16;
-        let area = f.area();
-        let at = Rect {
-            x: area.x + area.width.saturating_sub(width) / 2,
-            y: area.y + area.height / 2,
-            width: width.min(area.width),
-            height: 1.min(area.height),
-        };
-        f.render_widget(Paragraph::new(text).dim(), at);
-    });
 }
 
 /// Everything the filter matches against, lowercased.
@@ -630,8 +758,14 @@ fn haystack(d: &Device) -> String {
         d.mac.clone(),
         d.hostname.clone(),
     ];
+    let flags = d
+        .flags
+        .iter()
+        .map(|f| Some(flag_words(*f).to_string()))
+        .chain([change_words(d)]);
     fields
         .into_iter()
+        .chain(flags)
         .flatten()
         .collect::<Vec<_>>()
         .join("\n")
@@ -669,11 +803,54 @@ fn details(d: &Device, cols: u16) -> Vec<Line<'static>> {
         .join(" · ");
     if !heading.is_empty() {
         out.push(Line::from(heading).italic());
+    }
+    for flag in &d.flags {
+        let style = match flag {
+            Flag::AddressConflict => Style::new().red(),
+            Flag::LinkLocal | Flag::OffSubnet => Style::new().yellow(),
+        };
+        for part in wrap(flag_explanation(*flag), cols as usize) {
+            out.push(Line::styled(part, style));
+        }
+    }
+    for change in &d.changes {
+        let text = match change {
+            Change::New => "New: not seen on this network before".to_string(),
+            Change::Moved { from } => format!("Moved from {from}"),
+            Change::Renamed { from } => format!("Renamed from {from}"),
+            Change::Missing => "Didn't answer this time".to_string(),
+        };
+        out.push(Line::styled(text, Style::new().yellow()));
+    }
+    if d.heard_later {
+        out.push(Line::styled(
+            "Heard after the scan, while listening",
+            Style::new().cyan(),
+        ));
+    }
+    for (label, from) in [("Type from", &d.type_from), ("Name from", &d.name_from)] {
+        if let Some(from) = from {
+            row(&mut out, label.dark_gray(), from, Style::new().dark_gray());
+        }
+    }
+    if !out.is_empty() {
         out.push(Line::default());
     }
 
     field(&mut out, "IP", Some(d.ip.to_string()));
+    if !d.other_ips.is_empty() {
+        let ips: Vec<String> = d.other_ips.iter().map(Ipv4Addr::to_string).collect();
+        field(&mut out, "Also uses", Some(ips.join(" · ")));
+    }
     field(&mut out, "MAC", d.mac.clone());
+    for mac in &d.other_macs {
+        let vendor = mac.parse().ok().and_then(crate::oui::vendor);
+        let text = match vendor {
+            Some(v) => format!("{mac} ({v})"),
+            None => mac.clone(),
+        };
+        row(&mut out, "Other MAC".dim(), &text, Style::new().red());
+    }
     let vendor = match (d.vendor, d.randomized_mac) {
         (Some(v), _) => Some(v.to_string()),
         (None, true) => Some("unknown (private MAC)".into()),
@@ -681,6 +858,10 @@ fn details(d: &Device, cols: u16) -> Vec<Line<'static>> {
     };
     field(&mut out, "Vendor", vendor);
     field(&mut out, "Hostname", d.hostname.clone());
+    if !d.changes.contains(&Change::New) {
+        field(&mut out, "First seen", d.first_seen.map(history::date));
+    }
+    field(&mut out, "Last seen", d.last_seen.map(history::date));
     if !d.open_ports.is_empty() {
         let ports = d
             .open_ports
@@ -764,6 +945,25 @@ fn details(d: &Device, cols: u16) -> Vec<Line<'static>> {
         field(&mut out, "Server", h.server.clone());
     }
     out
+}
+
+/// What the filter matches for a flag.
+fn flag_words(flag: Flag) -> &'static str {
+    match flag {
+        Flag::LinkLocal => "link-local self-assigned",
+        Flag::OffSubnet => "off-subnet",
+        Flag::AddressConflict => "address conflict",
+    }
+}
+
+fn flag_explanation(flag: Flag) -> &'static str {
+    match flag {
+        Flag::LinkLocal => "Self-assigned address: it asked for one over DHCP and got no answer",
+        Flag::OffSubnet => {
+            "Not on this network: usually a static address left over from another one"
+        }
+        Flag::AddressConflict => "Address conflict: more than one device answered for this address",
+    }
 }
 
 fn section(out: &mut Vec<Line<'static>>, title: &'static str) {
@@ -940,6 +1140,36 @@ mod tests {
         );
         assert!(text.contains("airplay       Home Router\n              model = AppleTV14,1\n"));
         assert!(text.lines().all(|l| l == l.trim_end()));
+    }
+
+    #[test]
+    fn details_explain_flags_and_reasons() {
+        let scan = crate::demo::scan();
+        let text = |ip: &str| {
+            let d = scan
+                .devices
+                .iter()
+                .find(|d| d.ip.to_string() == ip)
+                .unwrap();
+            details_text(d)
+        };
+        let conflict = text("192.168.1.230");
+        assert!(conflict.contains("Address conflict: more than one device"));
+        assert!(conflict.contains("Other MAC     24:0a:c4:88:31:5b (Espressif)\n"));
+        assert!(text("169.254.37.12").contains("Self-assigned address"));
+        let tv = text("192.168.1.52");
+        // The value column is as wide as "companion-link", the longest service.
+        assert!(tv.contains("Type from      Bonjour airplay model = AppleTV14,1\n"));
+        assert!(tv.contains("Name from      AirPlay\n"));
+        let flagged = |words: &str| {
+            scan.devices
+                .iter()
+                .filter(|d| haystack(d).contains(words))
+                .count()
+        };
+        assert_eq!(flagged("conflict"), 1);
+        assert_eq!(flagged("link-local"), 1);
+        assert_eq!(flagged("off-subnet"), 1);
     }
 
     #[test]

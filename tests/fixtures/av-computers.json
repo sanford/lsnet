@@ -1,0 +1,50 @@
+[
+  {
+    "ip": "10.20.0.31",
+    "name": "FOH-MacBook",
+    "name_from": "Bonjour device-info",
+    "type": "Computer",
+    "model": "MacBook Pro (M3)",
+    "type_from": "Bonjour device-info model = Mac15,7",
+    "vendor": "Apple",
+    "mac": "f0:18:98:10:20:31",
+    "randomized_mac": false,
+    "hostname": null,
+    "open_ports": [22],
+    "gateway": false,
+    "this_device": false,
+    "mdns": {
+      "hostname": "FOH-MacBook.local",
+      "services": {
+        "device-info": "FOH-MacBook",
+        "netaudio-arc": "FOH-MacBook",
+        "netaudio-cmc": "FOH-MacBook",
+        "ssh": "FOH-MacBook"
+      },
+      "txt": {
+        "device-info": { "model": "Mac15,7" }
+      },
+      "ports": { "netaudio-arc": 4440, "netaudio-cmc": 8800, "ssh": 22 }
+    }
+  },
+  {
+    "ip": "10.20.0.44",
+    "name": "DESKTOP-OBS1",
+    "name_from": "NetBIOS",
+    "type": "Computer",
+    "model": "Windows PC",
+    "type_from": "its name \"desktop-obs1\"",
+    "vendor": "Intel",
+    "mac": "00:02:b3:10:20:44",
+    "randomized_mac": false,
+    "hostname": null,
+    "open_ports": [135, 445],
+    "gateway": false,
+    "this_device": false,
+    "mdns": {
+      "services": { "ndi": "DESKTOP-OBS1 (OBS)" },
+      "ports": { "ndi": 5961 }
+    },
+    "netbios": { "name": "DESKTOP-OBS1" }
+  }
+]

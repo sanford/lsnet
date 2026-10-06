@@ -5,19 +5,34 @@
 //! beat naming conventions, which beat open ports and MAC vendors.
 
 use crate::Device;
+use crate::services::port_name;
 
 pub fn classify(d: &mut Device) {
-    d.name = name(d);
-    let (kind, model) = identify(d)
-        .map(|(k, m)| (Some(k.to_string()), m))
-        .unwrap_or((None, None));
-    d.kind = kind.or_else(|| d.gateway.then(|| "Router".to_string()));
+    (d.name, d.name_from) = name_and_source(d).unzip();
+    let ((kind, model), why) = match identify_why(d) {
+        Some(((k, m), why)) => ((Some(k.to_string()), m), Some(why)),
+        None if d.gateway => (
+            (Some("Router".into()), None),
+            Some("it's the default gateway".into()),
+        ),
+        None => ((None, None), None),
+    };
+    d.kind = kind;
     d.model = model;
+    d.type_from = why;
 }
 
 type Id = (&'static str, Option<String>);
 
+/// An identification, and the evidence that decided it, for people to read.
+type Why = (Id, String);
+
+#[cfg(test)]
 fn identify(d: &Device) -> Option<Id> {
+    identify_why(d).map(|(id, _)| id)
+}
+
+fn identify_why(d: &Device) -> Option<Why> {
     from_mdns(d)
         .or_else(|| from_kasa(d))
         .or_else(|| from_ssdp(d))
@@ -30,18 +45,23 @@ fn identify(d: &Device) -> Option<Id> {
         .or_else(|| from_generic_ports(d))
 }
 
-fn from_mdns(d: &Device) -> Option<Id> {
+fn from_mdns(d: &Device) -> Option<Why> {
     let m = d.mdns.as_ref()?;
     let txt = |svc: &str, key: &str| m.txt.get(svc).and_then(|t| t.get(key)).map(String::as_str);
+    let said = |svc: &str, key: &str, value: &str| format!("Bonjour {svc} {key} = {value}");
 
     // Apple devices announce their model identifier in several places.
-    let apple_id = txt("airplay", "model")
-        .or_else(|| txt("raop", "am"))
-        .or_else(|| txt("companion-link", "rpmd"))
-        .or_else(|| txt("device-info", "model"))
-        .filter(|id| is_apple_id(id));
-    if let Some(id) = apple_id {
-        return Some(apple_model(id));
+    let apple_id = [
+        ("airplay", "model"),
+        ("raop", "am"),
+        ("companion-link", "rpmd"),
+        ("device-info", "model"),
+    ]
+    .into_iter()
+    .find_map(|(svc, key)| Some((svc, key, txt(svc, key)?)))
+    .filter(|(_, _, id)| is_apple_id(id));
+    if let Some((svc, key, id)) = apple_id {
+        return Some((apple_model(id), said(svc, key, id)));
     }
 
     if let Some(md) = txt("googlecast", "md") {
@@ -56,18 +76,13 @@ fn from_mdns(d: &Device) -> Option<Id> {
         } else {
             "TV / streamer"
         };
-        return Some((kind, Some(md.to_string())));
+        return Some(((kind, Some(md.to_string())), said("googlecast", "md", md)));
     }
 
-    if ["ipp", "ipps", "printer", "pdl-datastream"]
-        .iter()
-        .any(|s| m.services.contains_key(*s))
-    {
-        let model = ["ipp", "ipps", "printer", "pdl-datastream"]
-            .iter()
-            .find_map(|s| txt(s, "ty"))
-            .map(String::from);
-        return Some(("Printer", model));
+    let printing = ["ipp", "ipps", "printer", "pdl-datastream"];
+    if let Some(svc) = printing.iter().find(|s| m.services.contains_key(**s)) {
+        let model = printing.iter().find_map(|s| txt(s, "ty")).map(String::from);
+        return Some((("Printer", model), format!("advertises {svc} over Bonjour")));
     }
 
     if let Some(ci) = txt("hap", "ci").and_then(|c| c.parse().ok()) {
@@ -80,7 +95,10 @@ fn from_mdns(d: &Device) -> Option<Id> {
                 _ => md.to_string(),
             }
         });
-        return Some((homekit_category(ci), model));
+        return Some((
+            (homekit_category(ci), model),
+            format!("HomeKit category, {}", said("hap", "ci", &ci.to_string())),
+        ));
     }
 
     if let Some(mn) = txt("glinet", "mn") {
@@ -90,13 +108,13 @@ fn from_mdns(d: &Device) -> Option<Id> {
         } else {
             "Router"
         };
-        return Some((kind, Some(model)));
+        return Some(((kind, Some(model)), said("glinet", "mn", mn)));
     }
 
     None
 }
 
-fn from_kasa(d: &Device) -> Option<Id> {
+fn from_kasa(d: &Device) -> Option<Why> {
     let k = d.kasa.as_ref()?;
     let device_type = k.device_type.as_deref().unwrap_or("").to_ascii_lowercase();
     let description = k.description.as_deref().unwrap_or("").to_ascii_lowercase();
@@ -113,10 +131,14 @@ fn from_kasa(d: &Device) -> Option<Id> {
             kasa_model(m).unwrap_or_else(|| m.split('(').next().unwrap_or(m).trim().to_string());
         format!("TP-Link Kasa {m}")
     });
-    Some((kind, model))
+    let why = match &k.model {
+        Some(m) => format!("Kasa reports model {m}"),
+        None => "answers TP-Link Kasa's protocol".into(),
+    };
+    Some(((kind, model), why))
 }
 
-fn from_ssdp(d: &Device) -> Option<Id> {
+fn from_ssdp(d: &Device) -> Option<Why> {
     let s = d.ssdp.as_ref()?;
     let device_type = s.device_type.as_deref().unwrap_or("").to_ascii_lowercase();
     let maker = s.manufacturer.as_deref().unwrap_or("");
@@ -152,7 +174,18 @@ fn from_ssdp(d: &Device) -> Option<Id> {
     } else {
         return None;
     };
-    Some((kind, model))
+    // urn:schemas-upnp-org:device:MediaRenderer:1 → MediaRenderer
+    let short_type = s
+        .device_type
+        .as_deref()
+        .map(|t| t.rsplit(':').nth(1).unwrap_or(t));
+    let why = match (short_type, maker) {
+        (Some(t), "") => format!("UPnP {t}"),
+        (Some(t), m) => format!("UPnP {t} by {m}"),
+        (None, "") => format!("UPnP model {}", model.as_deref().unwrap_or("")),
+        (None, m) => format!("UPnP device by {m}"),
+    };
+    Some(((kind, model), why))
 }
 
 /// Every name a device goes by, lowercased.
@@ -172,128 +205,126 @@ fn all_names(d: &Device) -> Vec<String> {
 }
 
 /// Naming conventions: many devices ship with a hostname that says what they are.
-fn from_names(d: &Device) -> Option<Id> {
-    for n in &all_names(d) {
-        let first = n.split(['.', ' ']).next().unwrap_or(n);
-        if let Some(id) = xiaomi(first) {
-            return Some(id);
-        }
-        // TP-Link Kasa plugs and bulbs name themselves after their model number.
-        if let Some(model) = kasa_model(first) {
-            let kind = if model.starts_with("KL") || model.starts_with("LB") {
-                "Smart light"
-            } else {
-                "Smart plug"
-            };
-            return Some((kind, Some(format!("TP-Link Kasa {model}"))));
-        }
-        let has = |needle: &str| n.contains(needle);
-        let id: Option<Id> = if n.starts_with("amazonaqm") {
-            Some((
-                "Air monitor",
-                Some("Amazon Smart Air Quality Monitor".into()),
-            ))
-        } else if has("bitaxe") {
-            Some(("Bitcoin miner", Some("Bitaxe".into())))
-        } else if has("nerdqaxe") {
-            Some(("Bitcoin miner", Some("NerdQAxe".into())))
-        } else if has("nerdminer") || has("antminer") || has("avalon") {
-            Some(("Bitcoin miner", None))
-        } else if has("umbrel") {
-            Some(("Home server", Some("Umbrel".into())))
-        } else if has("awair") {
-            Some((
-                "Air monitor",
-                Some(
-                    if has("elem") {
-                        "Awair Element"
-                    } else {
-                        "Awair"
-                    }
-                    .into(),
-                ),
-            ))
-        } else if has("switchbot") {
-            Some((
-                "Smart home hub",
-                Some(
-                    if has("hub-2") {
-                        "SwitchBot Hub 2"
-                    } else {
-                        "SwitchBot"
-                    }
-                    .into(),
-                ),
-            ))
-        } else if has("blink") {
-            Some((
-                "Camera",
-                Some(if has("mini") { "Blink Mini" } else { "Blink" }.into()),
-            ))
-        } else if has("wyze") {
-            Some(("Camera", Some("Wyze".into())))
-        } else if has("ring-") || n.starts_with("ring") {
-            Some(("Doorbell / camera", Some("Ring".into())))
-        } else if has("shelly") {
-            Some(("Smart relay", Some("Shelly".into())))
-        } else if has("tasmota")
-            || has("esphome")
-            || n.starts_with("esp-")
-            || n.starts_with("esp32")
-        {
-            Some(("IoT device", None))
-        } else if has("homeassistant") || has("home-assistant") {
-            Some(("Home automation", Some("Home Assistant".into())))
-        } else if has("raspberrypi") {
-            Some(("Computer", Some("Raspberry Pi".into())))
-        } else if has("iphone") {
-            Some(("Phone", Some("iPhone".into())))
-        } else if has("ipad") {
-            Some(("Tablet", Some("iPad".into())))
-        } else if has("macbook") || has("imac") || has("mac-mini") || has("macmini") {
-            Some(("Computer", Some("Mac".into())))
-        } else if n.starts_with("desktop-") || n.starts_with("laptop-") {
-            Some(("Computer", Some("Windows PC".into())))
-        } else if has("android") || has("galaxy") || has("pixel") {
-            Some(("Phone", None))
-        } else if has("roku") {
-            Some(("TV / streamer", Some("Roku".into())))
-        } else if has("firetv") || has("fire-tv") {
-            Some(("TV / streamer", Some("Fire TV".into())))
-        } else if has("echo") {
-            Some(("Speaker", Some("Amazon Echo".into())))
-        } else if has("sonos") {
-            Some(("Speaker", Some("Sonos".into())))
-        } else if has("xbox") {
-            Some(("Game console", Some("Xbox".into())))
-        } else if has("playstation") || n.starts_with("ps4") || n.starts_with("ps5") {
-            Some(("Game console", Some("PlayStation".into())))
-        } else if has("nintendo") {
-            Some(("Game console", Some("Nintendo".into())))
-        } else if has("diskstation") || has("synology") || has("nas") {
-            Some(("NAS", None))
-        } else if has("kvm") {
-            Some(("KVM", None))
-        } else if has("printer") || n.starts_with("brw") || n.starts_with("epson") {
-            Some(("Printer", None))
-        } else {
-            None
-        };
-        if id.is_some() {
-            return id;
-        }
+fn from_names(d: &Device) -> Option<Why> {
+    all_names(d)
+        .into_iter()
+        .find_map(|n| Some((named(&n)?, format!("its name \"{n}\""))))
+}
+
+fn named(n: &str) -> Option<Id> {
+    let first = n.split(['.', ' ']).next().unwrap_or(n);
+    if let Some(id) = xiaomi(first) {
+        return Some(id);
     }
-    None
+    // TP-Link Kasa plugs and bulbs name themselves after their model number.
+    if let Some(model) = kasa_model(first) {
+        let kind = if model.starts_with("KL") || model.starts_with("LB") {
+            "Smart light"
+        } else {
+            "Smart plug"
+        };
+        return Some((kind, Some(format!("TP-Link Kasa {model}"))));
+    }
+    let has = |needle: &str| n.contains(needle);
+    if n.starts_with("amazonaqm") {
+        Some((
+            "Air monitor",
+            Some("Amazon Smart Air Quality Monitor".into()),
+        ))
+    } else if has("bitaxe") {
+        Some(("Bitcoin miner", Some("Bitaxe".into())))
+    } else if has("nerdqaxe") {
+        Some(("Bitcoin miner", Some("NerdQAxe".into())))
+    } else if has("nerdminer") || has("antminer") || has("avalon") {
+        Some(("Bitcoin miner", None))
+    } else if has("umbrel") {
+        Some(("Home server", Some("Umbrel".into())))
+    } else if has("awair") {
+        Some((
+            "Air monitor",
+            Some(
+                if has("elem") {
+                    "Awair Element"
+                } else {
+                    "Awair"
+                }
+                .into(),
+            ),
+        ))
+    } else if has("switchbot") {
+        Some((
+            "Smart home hub",
+            Some(
+                if has("hub-2") {
+                    "SwitchBot Hub 2"
+                } else {
+                    "SwitchBot"
+                }
+                .into(),
+            ),
+        ))
+    } else if has("blink") {
+        Some((
+            "Camera",
+            Some(if has("mini") { "Blink Mini" } else { "Blink" }.into()),
+        ))
+    } else if has("wyze") {
+        Some(("Camera", Some("Wyze".into())))
+    } else if has("ring-") || n.starts_with("ring") {
+        Some(("Doorbell / camera", Some("Ring".into())))
+    } else if has("shelly") {
+        Some(("Smart relay", Some("Shelly".into())))
+    } else if has("tasmota") || has("esphome") || n.starts_with("esp-") || n.starts_with("esp32") {
+        Some(("IoT device", None))
+    } else if has("homeassistant") || has("home-assistant") {
+        Some(("Home automation", Some("Home Assistant".into())))
+    } else if has("raspberrypi") {
+        Some(("Computer", Some("Raspberry Pi".into())))
+    } else if has("iphone") {
+        Some(("Phone", Some("iPhone".into())))
+    } else if has("ipad") {
+        Some(("Tablet", Some("iPad".into())))
+    } else if has("macbook") || has("imac") || has("mac-mini") || has("macmini") {
+        Some(("Computer", Some("Mac".into())))
+    } else if n.starts_with("desktop-") || n.starts_with("laptop-") {
+        Some(("Computer", Some("Windows PC".into())))
+    } else if has("android") || has("galaxy") || has("pixel") {
+        Some(("Phone", None))
+    } else if has("roku") {
+        Some(("TV / streamer", Some("Roku".into())))
+    } else if has("firetv") || has("fire-tv") {
+        Some(("TV / streamer", Some("Fire TV".into())))
+    } else if has("echo") {
+        Some(("Speaker", Some("Amazon Echo".into())))
+    } else if has("sonos") {
+        Some(("Speaker", Some("Sonos".into())))
+    } else if has("xbox") {
+        Some(("Game console", Some("Xbox".into())))
+    } else if has("playstation") || n.starts_with("ps4") || n.starts_with("ps5") {
+        Some(("Game console", Some("PlayStation".into())))
+    } else if has("nintendo") {
+        Some(("Game console", Some("Nintendo".into())))
+    } else if has("diskstation") || has("synology") || has("nas") {
+        Some(("NAS", None))
+    } else if has("kvm") {
+        Some(("KVM", None))
+    } else if has("printer") || n.starts_with("brw") || n.starts_with("epson") {
+        Some(("Printer", None))
+    } else {
+        None
+    }
 }
 
 /// Brand-only naming conventions, consulted after services and ports so that
 /// anything more specific (an Echo advertising Spotify is a speaker) wins.
-fn from_brand_names(d: &Device) -> Option<Id> {
-    let names = all_names(d);
-    if names.iter().any(|n| n.starts_with("amazon-")) {
-        return Some(("Amazon device", Some("Amazon".into())));
-    }
-    None
+fn from_brand_names(d: &Device) -> Option<Why> {
+    let n = all_names(d)
+        .into_iter()
+        .find(|n| n.starts_with("amazon-"))?;
+    Some((
+        ("Amazon device", Some("Amazon".into())),
+        format!("its name \"{n}\""),
+    ))
 }
 
 /// Xiaomi's Mi Home ecosystem names devices `<brand>-<category>-<model>_miio<id>`
@@ -338,156 +369,172 @@ fn xiaomi(name: &str) -> Option<Id> {
     Some((kind, Some(format!("{maker} {brand}.{category}.{variant}"))))
 }
 
-fn from_http(d: &Device) -> Option<Id> {
+fn from_http(d: &Device) -> Option<Why> {
     let h = d.http.as_ref()?;
     let server = h.server.as_deref().unwrap_or("").to_ascii_lowercase();
-    let title = h.title.as_deref().unwrap_or("").to_ascii_lowercase();
     if server.starts_with("ship") {
-        return Some(("Smart plug", Some("TP-Link Kasa".into())));
+        return Some((
+            ("Smart plug", Some("TP-Link Kasa".into())),
+            format!("web server \"{}\"", h.server.as_deref().unwrap_or("")),
+        ));
     }
-    if title.contains("axeos") {
-        return Some(("Bitcoin miner", Some("Bitaxe".into())));
-    }
-    if title.contains("nerd") && title.contains("dashboard") {
-        return Some(("Bitcoin miner", Some("NerdQAxe".into())));
-    }
-    if title.contains("umbrel") {
-        return Some(("Home server", Some("Umbrel".into())));
-    }
-    if title.contains("synology") || title.contains("diskstation") {
-        return Some(("NAS", Some("Synology".into())));
-    }
-    if title.contains("home assistant") {
-        return Some(("Home automation", Some("Home Assistant".into())));
-    }
-    if title.contains("pi-hole") {
-        return Some(("DNS server", Some("Pi-hole".into())));
-    }
-    if title.contains("unifi") {
-        return Some(("Network gear", Some("UniFi".into())));
-    }
-    None
+    let title = h.title.as_deref().unwrap_or("").to_ascii_lowercase();
+    let has = |needle: &str| title.contains(needle);
+    let id: Id = if has("axeos") {
+        ("Bitcoin miner", Some("Bitaxe".into()))
+    } else if has("nerd") && has("dashboard") {
+        ("Bitcoin miner", Some("NerdQAxe".into()))
+    } else if has("umbrel") {
+        ("Home server", Some("Umbrel".into()))
+    } else if has("synology") || has("diskstation") {
+        ("NAS", Some("Synology".into()))
+    } else if has("home assistant") {
+        ("Home automation", Some("Home Assistant".into()))
+    } else if has("pi-hole") {
+        ("DNS server", Some("Pi-hole".into()))
+    } else if has("unifi") {
+        ("Network gear", Some("UniFi".into()))
+    } else {
+        return None;
+    };
+    Some((
+        id,
+        format!("web page title \"{}\"", h.title.as_deref().unwrap_or("")),
+    ))
 }
 
-fn from_services(d: &Device) -> Option<Id> {
+/// Bonjour services only one kind of device or app advertises, most
+/// specific first.
+const SERVICE_RULES: &[(&str, &str, Option<&str>)] = &[
+    ("plexmediasvr", "Media server", Some("Plex")),
+    ("mediaremotetv", "TV / streamer", Some("Apple TV")),
+    ("viziocast", "TV / streamer", Some("Vizio")),
+    ("nanoleafapi", "Smart light", Some("Nanoleaf")),
+    ("elg", "Smart light", Some("Elgato")),
+    ("scanner", "Printer", None),
+    ("miio", "Smart home", Some("Xiaomi")),
+    ("adisk", "NAS", None),
+    ("nut", "NAS", None),
+    ("home-assistant", "Home automation", Some("Home Assistant")),
+    ("spotify-connect", "Speaker", None),
+    ("sonos", "Speaker", None),
+    ("raop", "Speaker", None),
+    ("smb", "Server", None),
+    ("afpovertcp", "Server", None),
+    ("androidtvremote2", "TV / streamer", None),
+    ("amzn-wplay", "TV / streamer", None),
+    ("nvstream", "TV / streamer", None),
+    ("matter", "Smart home", None),
+    ("matterc", "Smart home", None),
+    ("hap", "Smart home", None),
+    ("hue", "Smart home", None),
+    ("esphomelib", "Smart home", None),
+    ("workstation", "Computer", None),
+    ("ssh", "Computer", None),
+    ("sftp-ssh", "Computer", None),
+    ("daap", "Computer", None),
+];
+
+/// Every Dante service type: `_netaudio-arc` (routing), `_netaudio-cmc`
+/// (control, on every device), and `_dante-safe` and `_dante-upgr` while a
+/// device is in safe mode or being upgraded.
+fn is_dante(service: &str) -> bool {
+    service.starts_with("netaudio-") || service.starts_with("dante-")
+}
+
+fn from_services(d: &Device) -> Option<Why> {
     let m = d.mdns.as_ref()?;
-    let has = |s: &str| m.services.contains_key(s);
-    // Services only one kind of device or app advertises.
-    if has("plexmediasvr") {
-        return Some(("Media server", Some("Plex".into())));
+    let advertises = |svc: &str| format!("advertises {svc} over Bonjour");
+    // Audio and video over IP. Below anything more specific: a Mac running
+    // Dante Virtual Soundcard, or a PC sending NDI from OBS, is still a computer.
+    if let Some(svc) = m.services.keys().find(|s| is_dante(s)) {
+        return Some((("Audio device", Some("Dante".into())), advertises(svc)));
     }
-    if has("mediaremotetv") {
-        return Some(("TV / streamer", Some("Apple TV".into())));
+    if m.services.contains_key("ndi") {
+        return Some((("Video device", Some("NDI".into())), advertises("ndi")));
     }
-    if has("viziocast") {
-        return Some(("TV / streamer", Some("Vizio".into())));
-    }
-    if has("nanoleafapi") {
-        return Some(("Smart light", Some("Nanoleaf".into())));
-    }
-    if has("elg") {
-        return Some(("Smart light", Some("Elgato".into())));
-    }
-    if has("scanner") {
-        return Some(("Printer", None));
-    }
-    if has("miio") {
-        return Some(("Smart home", Some("Xiaomi".into())));
-    }
-    if has("adisk") || has("nut") {
-        return Some(("NAS", None));
-    }
-    if has("home-assistant") {
-        return Some(("Home automation", Some("Home Assistant".into())));
-    }
-    if has("spotify-connect") || has("sonos") || has("raop") {
-        return Some(("Speaker", None));
-    }
-    if has("smb") || has("afpovertcp") {
-        return Some(("Server", None));
-    }
-    if has("androidtvremote2") || has("amzn-wplay") || has("nvstream") {
-        return Some(("TV / streamer", None));
-    }
-    if has("matter") || has("matterc") || has("hap") || has("hue") || has("esphomelib") {
-        return Some(("Smart home", None));
-    }
-    if has("workstation") || has("ssh") || has("sftp-ssh") || has("daap") {
-        return Some(("Computer", None));
-    }
-    None
+    SERVICE_RULES
+        .iter()
+        .find(|(svc, _, _)| m.services.contains_key(*svc))
+        .map(|&(svc, kind, model)| ((kind, model.map(String::from)), advertises(svc)))
 }
 
-fn from_ports(d: &Device) -> Option<Id> {
+/// "port 8006 open (Proxmox)"
+fn port_open(p: u16) -> String {
+    match port_name(p) {
+        Some(name) => format!("port {p} open ({name})"),
+        None => format!("port {p} open"),
+    }
+}
+
+/// Ports only one kind of device or app listens on, most specific first.
+const PORT_RULES: &[(u16, &str, Option<&str>)] = &[
+    (9100, "Printer", None),
+    (8008, "TV / streamer", Some("Chromecast")),
+    (7000, "AirPlay device", None),
+    // Homelab apps that each claim a port of their own.
+    (8006, "Server", Some("Proxmox VE")),
+    (8123, "Home automation", Some("Home Assistant")),
+    (32400, "Media server", Some("Plex")),
+    (8096, "Media server", Some("Jellyfin / Emby")),
+    // Samba doesn't listen on the RPC endpoint mapper; Windows always does.
+    (135, "Computer", Some("Windows PC")),
+];
+
+fn from_ports(d: &Device) -> Option<Why> {
     let has = |p: u16| d.open_ports.contains(&p);
     if has(62078) {
         // 62078 is Apple's lockdown/sync port; AirPlay alongside it means an Apple TV or HomePod.
         return Some(if has(7000) {
-            ("Apple device", Some("Apple TV / HomePod".into()))
+            (
+                ("Apple device", Some("Apple TV / HomePod".into())),
+                "ports 62078 (iOS sync) and 7000 (AirPlay) open".into(),
+            )
         } else {
-            ("Phone / tablet", Some("iPhone / iPad".into()))
+            (
+                ("Phone / tablet", Some("iPhone / iPad".into())),
+                port_open(62078),
+            )
         });
     }
-    if has(9100) {
-        return Some(("Printer", None));
-    }
-    if has(8008) {
-        return Some(("TV / streamer", Some("Chromecast".into())));
-    }
-    if has(7000) {
-        return Some(("AirPlay device", None));
-    }
-    // Homelab apps that each claim a port of their own.
-    if has(8006) {
-        return Some(("Server", Some("Proxmox VE".into())));
-    }
-    if has(8123) {
-        return Some(("Home automation", Some("Home Assistant".into())));
-    }
-    if has(32400) {
-        return Some(("Media server", Some("Plex".into())));
-    }
-    if has(8096) {
-        return Some(("Media server", Some("Jellyfin / Emby".into())));
-    }
-    // Samba doesn't listen on the RPC endpoint mapper; Windows always does.
-    if has(135) {
-        return Some(("Computer", Some("Windows PC".into())));
-    }
-    None
+    PORT_RULES
+        .iter()
+        .find(|(p, _, _)| has(*p))
+        .map(|&(p, kind, model)| ((kind, model.map(String::from)), port_open(p)))
 }
 
 /// SSH and SMB run on everything from laptops to switches and NASes, so they
 /// are the weakest hint of all: consulted only after the MAC vendor, and
 /// labeled for what's known rather than guessing a kind of device.
-fn from_generic_ports(d: &Device) -> Option<Id> {
+fn from_generic_ports(d: &Device) -> Option<Why> {
     let has = |p: u16| d.open_ports.contains(&p);
+    let found = |p: u16, kind: &'static str| Some(((kind, None), port_open(p)));
     // Databases, message brokers and mail: something is running as a server.
-    if [
+    if let Some(p) = [
         1433, 1521, 1883, 3306, 5432, 5672, 6379, 27017, 25, 110, 143, 993, 995,
     ]
     .into_iter()
-    .any(has)
+    .find(|&p| has(p))
     {
-        return Some(("Server", None));
+        return found(p, "Server");
     }
     if has(445) {
-        return Some(("Computer / NAS", None));
+        return found(445, "Computer / NAS");
     }
     if has(3389) {
-        return Some(("Computer", None));
+        return found(3389, "Computer");
     }
     // Routers answer DNS too, but they're labeled as the gateway.
     if has(53) && !d.gateway {
-        return Some(("DNS server", None));
+        return found(53, "DNS server");
     }
     if has(22) {
-        return Some(("SSH device", None));
+        return found(22, "SSH device");
     }
     None
 }
 
-fn from_vendor(d: &Device) -> Option<Id> {
+fn from_vendor(d: &Device) -> Option<Why> {
     // Phones, tablets and laptops use per-network random MACs and rarely
     // listen on any ports. VMs and containers also use random-looking MACs,
     // but usually run services, so only guess when nothing is listening.
@@ -497,10 +544,18 @@ fn from_vendor(d: &Device) -> Option<Id> {
         && !d.gateway
         && !d.this_device
     {
-        return Some(("Phone / laptop", None));
+        return Some((
+            ("Phone / laptop", None),
+            "private MAC, no open ports".into(),
+        ));
     }
     let v = d.vendor?;
+    let why = format!("MAC vendor {v}");
     let lower = v.to_ascii_lowercase();
+    // Audinate makes only Dante modules, so its MACs are Dante interfaces.
+    if lower.contains("audinate") {
+        return Some((("Audio device", Some("Dante".into())), why));
+    }
     let kind = match () {
         _ if lower.contains("raspberry") => "Computer",
         _ if lower.contains("espressif") || lower.contains("tuya") => "IoT device",
@@ -529,41 +584,34 @@ fn from_vendor(d: &Device) -> Option<Id> {
         _ if lower.contains("google") => "Google device",
         _ => return None,
     };
-    Some((kind, Some(v.to_string())))
+    Some(((kind, Some(v.to_string())), why))
 }
 
-/// The friendliest name the device gives itself.
+/// The friendliest name the device gives itself, and where it came from.
 ///
-/// Names people set themselves (AirPlay, HomeKit, Cast, Fire TV) come first. Next is
-/// the device's primary `.local` name, kept whole so it can be pasted into a
-/// browser or ssh, which beats generic service labels like Home Assistant's
-/// "Home" or a file share's name. A Windows or Samba computer name comes
-/// after UPnP's. Router DNS names are shortened to the host.
-fn name(d: &Device) -> Option<String> {
+/// Names people set themselves (AirPlay, HomeKit, Cast, Fire TV, Dante) come
+/// first. Next is the device's primary `.local` name, kept whole so it can be
+/// pasted into a browser or ssh, which beats generic service labels like Home
+/// Assistant's "Home" or a file share's name. A Windows or Samba computer
+/// name comes after UPnP's. Router DNS names are shortened to the host.
+fn name_and_source(d: &Device) -> Option<(String, String)> {
     let m = d.mdns.as_ref();
-    let service = |services: &[&str]| -> Option<String> {
+    let service = |services: &[&str]| -> Option<(String, String)> {
         let m = m?;
         services
             .iter()
-            .filter_map(|s| m.services.get(*s))
+            .filter_map(|s| Some((*s, m.services.get(*s)?)))
             // RAOP instances are "<MAC>@<name>".
-            .map(|n| {
-                n.rsplit_once('@')
-                    .map_or(n.as_str(), |(_, name)| name)
-                    .to_string()
+            .map(|(s, n)| {
+                let name = n.rsplit_once('@').map_or(n.as_str(), |(_, name)| name);
+                (name.to_string(), service_label(s))
             })
-            .find(|n| !is_junk_name(n))
+            .find(|(n, _)| !is_junk_name(n))
     };
-    let local = m
-        .and_then(|m| m.hostname.clone())
-        .filter(|h| h.ends_with(".local") && !is_junk_name(h));
+    fn from(source: &'static str) -> impl Fn(String) -> (String, String) {
+        move |name| (name, source.to_string())
+    }
     let txt = |svc: &str, key: &str| m.and_then(|m| m.txt.get(svc)?.get(key).cloned());
-    let kasa = d.kasa.as_ref().and_then(|k| k.alias.clone());
-    // Cast and Fire TV keep the name their owner gave them in TXT records.
-    let personal = txt("googlecast", "fn")
-        .or(kasa)
-        .or_else(|| txt("amzn-wplay", "n"))
-        .or_else(|| service(&["device-info", "airplay", "companion-link", "raop", "hap"]));
     let dns = d.hostname.as_ref().map(|h| {
         if h.ends_with(".local") {
             h.clone()
@@ -572,17 +620,55 @@ fn name(d: &Device) -> Option<String> {
         }
     });
     [
-        personal,
-        local,
+        // Cast and Fire TV keep the name their owner gave them in TXT records.
+        txt("googlecast", "fn").map(from("Google Cast")),
+        d.kasa
+            .as_ref()
+            .and_then(|k| k.alias.clone())
+            .map(from("Kasa app")),
+        txt("amzn-wplay", "n").map(from("Fire TV")),
+        service(&[
+            "device-info",
+            "airplay",
+            "companion-link",
+            "raop",
+            "hap",
+            "netaudio-arc",
+            "netaudio-cmc",
+        ]),
+        m.and_then(|m| m.hostname.clone())
+            .filter(|h| h.ends_with(".local"))
+            .map(from(".local name")),
         service(&["smb", "home-assistant", "ipp", "printer"]),
-        d.ssdp.as_ref().and_then(|s| s.friendly_name.clone()),
-        d.netbios.as_ref().map(|n| n.name.clone()),
-        m.and_then(|m| m.hostname.clone()),
-        dns,
+        d.ssdp
+            .as_ref()
+            .and_then(|s| s.friendly_name.clone())
+            .map(from("UPnP")),
+        d.netbios
+            .as_ref()
+            .map(|n| n.name.clone())
+            .map(from("NetBIOS")),
+        m.and_then(|m| m.hostname.clone()).map(from("mDNS")),
+        dns.map(from("reverse DNS")),
     ]
     .into_iter()
     .flatten()
-    .find(|n| !is_junk_name(n))
+    .find(|(n, _)| !is_junk_name(n))
+}
+
+#[cfg(test)]
+fn name(d: &Device) -> Option<String> {
+    name_and_source(d).map(|(n, _)| n)
+}
+
+/// What to call a Bonjour service as the source of a name.
+fn service_label(service: &str) -> String {
+    match service {
+        "airplay" | "raop" => "AirPlay".into(),
+        "hap" => "HomeKit".into(),
+        s if is_dante(s) => "Dante".into(),
+        s => format!("Bonjour {s}"),
+    }
 }
 
 /// Machine-generated names that tell a person nothing.
@@ -869,6 +955,69 @@ mod tests {
     }
 
     #[test]
+    fn says_why() {
+        let why = |d: &Device| identify_why(d).map(|(_, why)| why);
+        assert_eq!(
+            why(&device(&[22, 8006], None)).as_deref(),
+            Some("port 8006 open (Proxmox)")
+        );
+        assert_eq!(
+            why(&device(&[22], Some("Ubiquiti"))).as_deref(),
+            Some("MAC vendor Ubiquiti")
+        );
+        assert_eq!(
+            why(&device(&[62078, 7000], None)).as_deref(),
+            Some("ports 62078 (iOS sync) and 7000 (AirPlay) open")
+        );
+        let mut router = device(&[53, 80], None);
+        router.gateway = true;
+        classify(&mut router);
+        assert_eq!(router.kind.as_deref(), Some("Router"));
+        assert_eq!(
+            router.type_from.as_deref(),
+            Some("it's the default gateway")
+        );
+    }
+
+    #[test]
+    fn dante_and_ndi() {
+        let id = |services: &[&str], vendor| {
+            let mut d = device(&[], vendor);
+            let mut m = crate::mdns::MdnsInfo::default();
+            for s in services {
+                m.services.insert(s.to_string(), "Stagebox-FOH".into());
+            }
+            d.mdns = Some(m);
+            d
+        };
+        let dante = id(&["netaudio-cmc"], None);
+        assert_eq!(
+            identify_why(&dante),
+            Some((
+                ("Audio device", Some("Dante".into())),
+                "advertises netaudio-cmc over Bonjour".into()
+            ))
+        );
+        assert_eq!(
+            name_and_source(&dante),
+            Some(("Stagebox-FOH".into(), "Dante".into()))
+        );
+        // In safe mode, a Dante device still is one.
+        assert_eq!(
+            identify(&id(&["dante-safe"], None)).map(|i| i.0),
+            Some("Audio device")
+        );
+        assert_eq!(
+            identify(&id(&[], Some("Audinate Pty L"))),
+            Some(("Audio device", Some("Dante".into())))
+        );
+        assert_eq!(
+            identify(&id(&["ndi"], None)),
+            Some(("Video device", Some("NDI".into())))
+        );
+    }
+
+    #[test]
     fn netbios_names() {
         let mut d = device(&[445], None);
         d.netbios = Some(crate::netbios::NetbiosInfo {
@@ -876,7 +1025,10 @@ mod tests {
             mac: None,
         });
         d.hostname = Some("192-168-1-2.lan".into());
-        assert_eq!(name(&d).as_deref(), Some("DESKTOP-4F2K9QX"));
+        assert_eq!(
+            name_and_source(&d),
+            Some(("DESKTOP-4F2K9QX".into(), "NetBIOS".into()))
+        );
         assert_eq!(identify(&d), Some(("Computer", Some("Windows PC".into()))));
         // UPnP's friendly name comes first; NetBIOS beats the mDNS host.
         d.ssdp = Some(crate::ssdp::SsdpInfo {

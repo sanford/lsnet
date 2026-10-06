@@ -1,7 +1,7 @@
 //! Just enough HTTP to read a UPnP description or a web UI's banner.
 
 use flate2::read::GzDecoder;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::io::Read;
 use std::net::Ipv4Addr;
 use std::time::Duration;
@@ -93,7 +93,7 @@ fn complete(buf: &[u8]) -> bool {
         .is_some_and(|len| body.len() >= len)
 }
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct Banner {
     pub server: Option<String>,
     pub title: Option<String>,

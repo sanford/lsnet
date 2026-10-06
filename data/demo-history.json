@@ -1,0 +1,198 @@
+{
+  "version": 1,
+  "networks": [
+    {
+      "subnet": "192.168.1.0/24",
+      "gateway_ip": "192.168.1.1",
+      "router": {
+        "mac": "00:09:5b:7a:10:01",
+        "udn": "uuid:4d696e69-444c-164e-9d41-00095b7a1001"
+      },
+      "first_seen": 1788220800,
+      "last_seen": 1791273600,
+      "scans": 37,
+      "devices": [
+        {
+          "ip": "192.168.0.78",
+          "mac": "00:1d:c1:12:34:56",
+          "type": "Audio device",
+          "model": "Dante",
+          "first_seen": 1788220800,
+          "last_seen": 1791273600,
+          "quiet": true
+        },
+        {
+          "ip": "192.168.1.1",
+          "mac": "00:09:5b:7a:10:01",
+          "name": "Home Router",
+          "name_from": "UPnP",
+          "type": "Router",
+          "model": "NETGEAR RAX50",
+          "first_seen": 1788220800,
+          "last_seen": 1791273600
+        },
+        {
+          "ip": "192.168.1.8",
+          "mac": "00:1b:a9:d2:e1:f0",
+          "local": "BRW001BA9D2E1F0.local",
+          "name": "Brother HL-L2350DW series",
+          "name_from": "Bonjour ipp",
+          "type": "Printer",
+          "model": "Brother HL-L2350DW series",
+          "first_seen": 1788220800,
+          "last_seen": 1791273600
+        },
+        {
+          "ip": "192.168.1.14",
+          "mac": "00:11:32:66:d8:71",
+          "local": "diskstation.local",
+          "name": "diskstation.local",
+          "name_from": ".local name",
+          "type": "NAS",
+          "model": "Synology DS920+",
+          "first_seen": 1788220800,
+          "last_seen": 1791273600
+        },
+        {
+          "ip": "192.168.1.40",
+          "mac": "9c:8e:cd:31:07:aa",
+          "local": "ptz-cam-2.local",
+          "name": "ptz-cam-2.local",
+          "name_from": ".local name",
+          "type": "Video device",
+          "model": "NDI",
+          "first_seen": 1788220800,
+          "last_seen": 1791273600
+        },
+        {
+          "ip": "192.168.1.52",
+          "mac": "f0:18:98:3c:62:8d",
+          "local": "Living-Room.local",
+          "name": "Living Room",
+          "name_from": "AirPlay",
+          "type": "TV / streamer",
+          "model": "Apple TV 4K (3rd gen)",
+          "first_seen": 1788220800,
+          "last_seen": 1791273600
+        },
+        {
+          "ip": "192.168.1.61",
+          "mac": "6c:4a:85:0b:77:21",
+          "local": "Kitchen.local",
+          "name": "Kitchen",
+          "name_from": "AirPlay",
+          "type": "Speaker",
+          "model": "HomePod mini",
+          "first_seen": 1788220800,
+          "last_seen": 1791273600
+        },
+        {
+          "ip": "192.168.1.71",
+          "mac": "f4:f5:d8:44:19:0e",
+          "local": "6f1e2a3b-4c5d-6e7f-8091-a2b3c4d5e6f7.local",
+          "name": "Office speaker",
+          "name_from": "Google Cast",
+          "type": "Speaker",
+          "model": "Google Nest Mini",
+          "first_seen": 1788220800,
+          "last_seen": 1791273600
+        },
+        {
+          "ip": "192.168.1.77",
+          "mac": "00:1d:c1:0a:4f:20",
+          "local": "Stagebox-FOH.local",
+          "name": "Stagebox-FOH",
+          "name_from": "Dante",
+          "type": "Audio device",
+          "model": "Dante",
+          "first_seen": 1788220800,
+          "last_seen": 1791273600
+        },
+        {
+          "ip": "192.168.1.88",
+          "mac": "6c:5a:b0:9e:41:3d",
+          "name": "kp115",
+          "name_from": "reverse DNS",
+          "type": "Smart plug",
+          "model": "TP-Link Kasa KP115",
+          "first_seen": 1788220800,
+          "last_seen": 1791273600
+        },
+        {
+          "ip": "192.168.1.95",
+          "mac": "0c:95:05:3e:41:7a",
+          "name": "myq-garage",
+          "name_from": "reverse DNS",
+          "type": "Garage door",
+          "model": "The Chamberlain",
+          "first_seen": 1788220800,
+          "last_seen": 1791273600
+        },
+        {
+          "ip": "192.168.1.112",
+          "mac": "3a:91:5c:e2:07:1b",
+          "name": "alex-phone",
+          "name_from": "reverse DNS",
+          "type": "Phone / tablet",
+          "model": "iPhone / iPad",
+          "first_seen": 1788220800,
+          "last_seen": 1791273600
+        },
+        {
+          "ip": "192.168.1.130",
+          "mac": "b8:27:eb:5a:11:c4",
+          "local": "raspberrypi.local",
+          "name": "raspberrypi.local",
+          "name_from": ".local name",
+          "type": "Computer",
+          "model": "Raspberry Pi",
+          "first_seen": 1788220800,
+          "last_seen": 1791273600
+        },
+        {
+          "ip": "192.168.1.150",
+          "mac": "b8:27:eb:c0:33:5e",
+          "name": "dns",
+          "name_from": "reverse DNS",
+          "type": "DNS server",
+          "model": "Pi-hole",
+          "first_seen": 1788220800,
+          "last_seen": 1791273600
+        },
+        {
+          "ip": "192.168.1.196",
+          "mac": "f0:18:98:a1:b2:c3",
+          "local": "Alexs-MacBook-Pro.local",
+          "name": "Alex's MacBook Pro",
+          "name_from": "Bonjour companion-link",
+          "type": "Computer",
+          "model": "MacBook Pro (M4)",
+          "first_seen": 1788220800,
+          "last_seen": 1791273600
+        },
+        {
+          "ip": "192.168.1.201",
+          "mac": "00:02:b3:4d:6e:01",
+          "type": "Computer",
+          "first_seen": 1788220800,
+          "last_seen": 1791273600
+        },
+        {
+          "ip": "192.168.1.203",
+          "mac": "3c:6a:9d:12:ab:7f",
+          "first_seen": 1788220800,
+          "last_seen": 1791273600,
+          "quiet": true
+        },
+        {
+          "ip": "192.168.1.230",
+          "mac": "24:0a:c4:1d:9e:02",
+          "type": "IoT device",
+          "model": "Espressif",
+          "first_seen": 1788220800,
+          "last_seen": 1791273600
+        }
+      ]
+    }
+  ]
+}

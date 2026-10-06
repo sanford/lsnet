@@ -1,0 +1,510 @@
+[
+  {
+    "ip": "169.254.37.12",
+    "name": "PTZ-CAM-1.local",
+    "name_from": ".local name",
+    "type": "Video device",
+    "model": "NDI",
+    "type_from": "advertises ndi over Bonjour",
+    "vendor": "Sony",
+    "mac": "00:01:4a:5e:21:9c",
+    "randomized_mac": false,
+    "hostname": null,
+    "open_ports": [],
+    "gateway": false,
+    "this_device": false,
+    "flags": [
+      "link-local"
+    ],
+    "mdns": {
+      "hostname": "PTZ-CAM-1.local",
+      "services": {
+        "ndi": "PTZ-CAM-1 (Channel 1)"
+      },
+      "txt": {},
+      "ports": {
+        "ndi": 5961
+      }
+    }
+  },
+  {
+    "ip": "192.168.0.78",
+    "name": null,
+    "type": "Audio device",
+    "model": "Dante",
+    "type_from": "MAC vendor Audinate Pty L",
+    "vendor": "Audinate Pty L",
+    "mac": "00:1d:c1:12:34:56",
+    "randomized_mac": false,
+    "hostname": null,
+    "open_ports": [],
+    "gateway": false,
+    "this_device": false,
+    "flags": [
+      "off-subnet"
+    ]
+  },
+  {
+    "ip": "192.168.1.1",
+    "name": "Home Router",
+    "name_from": "UPnP",
+    "type": "Router",
+    "model": "NETGEAR RAX50",
+    "type_from": "UPnP InternetGatewayDevice by NETGEAR",
+    "vendor": "Netgear",
+    "mac": "00:09:5b:7a:10:01",
+    "randomized_mac": false,
+    "hostname": "routerlogin.lan",
+    "open_ports": [
+      53,
+      80,
+      443
+    ],
+    "gateway": true,
+    "this_device": false,
+    "ssdp": {
+      "server": "Linux/4.1.27 UPnP/1.0 Portable SDK for UPnP devices/1.6.18",
+      "friendly_name": "Home Router",
+      "manufacturer": "NETGEAR",
+      "model_name": "RAX50",
+      "model_number": null,
+      "device_type": "urn:schemas-upnp-org:device:InternetGatewayDevice:1",
+      "udn": "uuid:4d696e69-444c-164e-9d41-00095b7a1001"
+    }
+  },
+  {
+    "ip": "192.168.1.8",
+    "name": "Brother HL-L2350DW series",
+    "name_from": "Bonjour ipp",
+    "type": "Printer",
+    "model": "Brother HL-L2350DW series",
+    "type_from": "advertises ipp over Bonjour",
+    "vendor": "Brother industries",
+    "mac": "00:1b:a9:d2:e1:f0",
+    "randomized_mac": false,
+    "hostname": null,
+    "open_ports": [
+      80,
+      443,
+      9100
+    ],
+    "gateway": false,
+    "this_device": false,
+    "mdns": {
+      "hostname": "BRW001BA9D2E1F0.local",
+      "services": {
+        "ipp": "Brother HL-L2350DW series",
+        "pdl-datastream": "Brother HL-L2350DW series"
+      },
+      "txt": {
+        "ipp": {
+          "ty": "Brother HL-L2350DW series"
+        }
+      },
+      "ports": {
+        "ipp": 631,
+        "pdl-datastream": 9100
+      }
+    }
+  },
+  {
+    "ip": "192.168.1.14",
+    "name": "diskstation.local",
+    "name_from": ".local name",
+    "type": "NAS",
+    "model": "Synology DS920+",
+    "type_from": "UPnP Basic by Synology",
+    "vendor": "Synology",
+    "mac": "00:11:32:66:d8:71",
+    "randomized_mac": false,
+    "hostname": "diskstation.lan",
+    "open_ports": [
+      22,
+      80,
+      139,
+      443,
+      445,
+      5001,
+      32400
+    ],
+    "gateway": false,
+    "this_device": false,
+    "mdns": {
+      "hostname": "diskstation.local",
+      "services": {
+        "adisk": "diskstation",
+        "smb": "diskstation"
+      },
+      "txt": {},
+      "ports": {
+        "smb": 445
+      }
+    },
+    "ssdp": {
+      "server": null,
+      "friendly_name": "diskstation (DS920+)",
+      "manufacturer": "Synology",
+      "model_name": "DS920+",
+      "model_number": null,
+      "device_type": "urn:schemas-upnp-org:device:Basic:1"
+    },
+    "http": {
+      "server": "nginx",
+      "title": "diskstation - Synology DiskStation"
+    }
+  },
+  {
+    "ip": "192.168.1.40",
+    "name": "ptz-cam-2.local",
+    "name_from": ".local name",
+    "type": "Video device",
+    "model": "NDI",
+    "type_from": "advertises ndi over Bonjour",
+    "vendor": "Amcrest",
+    "mac": "9c:8e:cd:31:07:aa",
+    "randomized_mac": false,
+    "hostname": null,
+    "open_ports": [
+      80
+    ],
+    "gateway": false,
+    "this_device": false,
+    "mdns": {
+      "hostname": "ptz-cam-2.local",
+      "services": {
+        "ndi": "PTZ-CAM-2 (Channel 1)"
+      },
+      "txt": {},
+      "ports": {
+        "ndi": 5961
+      }
+    }
+  },
+  {
+    "ip": "192.168.1.52",
+    "name": "Living Room",
+    "name_from": "AirPlay",
+    "type": "TV / streamer",
+    "model": "Apple TV 4K (3rd gen)",
+    "type_from": "Bonjour airplay model = AppleTV14,1",
+    "vendor": "Apple",
+    "mac": "f0:18:98:3c:62:8d",
+    "randomized_mac": false,
+    "hostname": "living-room.lan",
+    "open_ports": [
+      7000,
+      62078
+    ],
+    "gateway": false,
+    "this_device": false,
+    "mdns": {
+      "hostname": "Living-Room.local",
+      "services": {
+        "airplay": "Living Room",
+        "companion-link": "Living Room",
+        "raop": "6C4A85D1E0F2@Living Room"
+      },
+      "txt": {
+        "airplay": {
+          "model": "AppleTV14,1"
+        },
+        "companion-link": {
+          "rpmd": "AppleTV14,1"
+        },
+        "raop": {
+          "am": "AppleTV14,1"
+        }
+      },
+      "ports": {
+        "airplay": 7000,
+        "companion-link": 49153,
+        "raop": 7000
+      },
+      "mac": "6c:4a:85:d1:e0:f2"
+    }
+  },
+  {
+    "ip": "192.168.1.60",
+    "name": "Kitchen",
+    "name_from": "AirPlay",
+    "type": "Speaker",
+    "model": "HomePod mini",
+    "type_from": "Bonjour airplay model = AudioAccessory5,1",
+    "vendor": "Apple",
+    "mac": "6c:4a:85:0b:77:21",
+    "randomized_mac": false,
+    "hostname": null,
+    "open_ports": [
+      7000
+    ],
+    "gateway": false,
+    "this_device": false,
+    "mdns": {
+      "hostname": "Kitchen.local",
+      "services": {
+        "airplay": "Kitchen",
+        "raop": "6C4A850B7721@Kitchen"
+      },
+      "txt": {
+        "airplay": {
+          "model": "AudioAccessory5,1"
+        },
+        "raop": {
+          "am": "AudioAccessory5,1"
+        }
+      },
+      "ports": {
+        "airplay": 7000,
+        "raop": 7000
+      },
+      "mac": "6c:4a:85:0b:77:21"
+    }
+  },
+  {
+    "ip": "192.168.1.71",
+    "name": "Office speaker",
+    "name_from": "Google Cast",
+    "type": "Speaker",
+    "model": "Google Nest Mini",
+    "type_from": "Bonjour googlecast md = Google Nest Mini",
+    "vendor": "Google",
+    "mac": "f4:f5:d8:44:19:0e",
+    "randomized_mac": false,
+    "hostname": null,
+    "open_ports": [
+      8008
+    ],
+    "gateway": false,
+    "this_device": false,
+    "mdns": {
+      "hostname": "6f1e2a3b-4c5d-6e7f-8091-a2b3c4d5e6f7.local",
+      "services": {
+        "googlecast": "Google-Nest-Mini-6f1e2a3b4c5d6e7f"
+      },
+      "txt": {
+        "googlecast": {
+          "fn": "Office speaker",
+          "md": "Google Nest Mini"
+        }
+      },
+      "ports": {
+        "googlecast": 8009
+      }
+    }
+  },
+  {
+    "ip": "192.168.1.77",
+    "name": "Stagebox-FOH",
+    "name_from": "Dante",
+    "type": "Audio device",
+    "model": "Dante",
+    "type_from": "advertises netaudio-arc over Bonjour",
+    "vendor": "Audinate Pty L",
+    "mac": "00:1d:c1:0a:4f:20",
+    "randomized_mac": false,
+    "hostname": null,
+    "open_ports": [],
+    "gateway": false,
+    "this_device": false,
+    "mdns": {
+      "hostname": "Stagebox-FOH.local",
+      "services": {
+        "netaudio-arc": "Stagebox-FOH",
+        "netaudio-cmc": "Stagebox-FOH"
+      },
+      "txt": {},
+      "ports": {
+        "netaudio-arc": 4440,
+        "netaudio-cmc": 8800
+      }
+    }
+  },
+  {
+    "ip": "192.168.1.88",
+    "name": "kp115",
+    "name_from": "reverse DNS",
+    "type": "Smart plug",
+    "model": "TP-Link Kasa KP115",
+    "type_from": "its name \"kp115.lan\"",
+    "vendor": "TP-Link",
+    "mac": "6c:5a:b0:9e:41:3d",
+    "randomized_mac": false,
+    "hostname": "kp115.lan",
+    "open_ports": [
+      80
+    ],
+    "gateway": false,
+    "this_device": false,
+    "http": {
+      "server": "SHIP 2.0",
+      "title": null
+    }
+  },
+  {
+    "ip": "192.168.1.90",
+    "name": "blink-mini",
+    "name_from": "reverse DNS",
+    "type": "Camera",
+    "model": "Blink Mini",
+    "type_from": "its name \"blink-mini.lan\"",
+    "vendor": "Amazon",
+    "mac": "fc:65:de:2b:80:17",
+    "randomized_mac": false,
+    "hostname": "blink-mini.lan",
+    "open_ports": [],
+    "gateway": false,
+    "this_device": false
+  },
+  {
+    "ip": "192.168.1.112",
+    "name": "alex-phone",
+    "name_from": "reverse DNS",
+    "type": "Phone / tablet",
+    "model": "iPhone / iPad",
+    "type_from": "port 62078 open (iOS sync)",
+    "vendor": null,
+    "mac": "3a:91:5c:e2:07:1b",
+    "randomized_mac": true,
+    "hostname": "alex-phone.lan",
+    "open_ports": [
+      62078
+    ],
+    "gateway": false,
+    "this_device": false
+  },
+  {
+    "ip": "192.168.1.130",
+    "name": "raspberrypi.local",
+    "name_from": ".local name",
+    "type": "Computer",
+    "model": "Raspberry Pi",
+    "type_from": "its name \"raspberrypi.local\"",
+    "vendor": "Raspberry Pi",
+    "mac": "b8:27:eb:5a:11:c4",
+    "randomized_mac": false,
+    "hostname": null,
+    "open_ports": [
+      22,
+      1883,
+      8123
+    ],
+    "gateway": false,
+    "this_device": false,
+    "mdns": {
+      "hostname": "raspberrypi.local",
+      "services": {
+        "ssh": "raspberrypi",
+        "workstation": "raspberrypi"
+      },
+      "txt": {},
+      "ports": {
+        "ssh": 22,
+        "workstation": 9
+      },
+      "mac": "b8:27:eb:5a:11:c4"
+    }
+  },
+  {
+    "ip": "192.168.1.150",
+    "name": "pihole",
+    "name_from": "reverse DNS",
+    "type": "DNS server",
+    "model": "Pi-hole",
+    "type_from": "web page title \"Pi-hole Admin Console\"",
+    "vendor": "Raspberry Pi",
+    "mac": "b8:27:eb:c0:33:5e",
+    "randomized_mac": false,
+    "hostname": "pihole.lan",
+    "open_ports": [
+      22,
+      53,
+      80
+    ],
+    "gateway": false,
+    "this_device": false,
+    "http": {
+      "server": "lighttpd/1.4.59",
+      "title": "Pi-hole Admin Console"
+    }
+  },
+  {
+    "ip": "192.168.1.196",
+    "name": "Alex's MacBook Pro",
+    "name_from": "Bonjour companion-link",
+    "type": "Computer",
+    "model": "MacBook Pro (M4)",
+    "type_from": "Bonjour companion-link rpmd = Mac16,7",
+    "vendor": "Apple",
+    "mac": "f0:18:98:a1:b2:c3",
+    "randomized_mac": false,
+    "hostname": null,
+    "open_ports": [],
+    "gateway": false,
+    "this_device": true,
+    "mdns": {
+      "hostname": "Alexs-MacBook-Pro.local",
+      "services": {
+        "companion-link": "Alex's MacBook Pro"
+      },
+      "txt": {
+        "companion-link": {
+          "rpmd": "Mac16,7"
+        }
+      },
+      "ports": {
+        "companion-link": 49152
+      }
+    }
+  },
+  {
+    "ip": "192.168.1.201",
+    "name": null,
+    "type": "Computer",
+    "model": null,
+    "type_from": "port 3389 open (RDP)",
+    "vendor": "Intel",
+    "mac": "00:02:b3:4d:6e:01",
+    "randomized_mac": false,
+    "hostname": null,
+    "open_ports": [
+      3389
+    ],
+    "gateway": false,
+    "this_device": false
+  },
+  {
+    "ip": "192.168.1.203",
+    "name": null,
+    "type": null,
+    "model": null,
+    "vendor": "Dexatek",
+    "mac": "3c:6a:9d:12:ab:7f",
+    "randomized_mac": false,
+    "hostname": null,
+    "open_ports": [],
+    "gateway": false,
+    "this_device": false
+  },
+  {
+    "ip": "192.168.1.230",
+    "name": null,
+    "type": "IoT device",
+    "model": "Espressif",
+    "type_from": "MAC vendor Espressif",
+    "vendor": "Espressif",
+    "mac": "24:0a:c4:1d:9e:02",
+    "randomized_mac": false,
+    "hostname": null,
+    "open_ports": [
+      80
+    ],
+    "gateway": false,
+    "this_device": false,
+    "flags": [
+      "address-conflict"
+    ],
+    "other_macs": [
+      "24:0a:c4:88:31:5b"
+    ]
+  }
+]

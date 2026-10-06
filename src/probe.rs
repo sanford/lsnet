@@ -8,6 +8,7 @@ use std::collections::{HashMap, VecDeque};
 use std::io::ErrorKind;
 use std::net::Ipv4Addr;
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 use tokio::net::TcpStream;
 use tokio::sync::Semaphore;
@@ -35,7 +36,12 @@ pub const AWAKE_WAIT: Duration = Duration::from_millis(250);
 /// Live hosts and which ports they have open: `LIVENESS` on every target,
 /// then `SERVICES` on each host as soon as it answers. Up to a /22 every
 /// check starts at once; beyond that they start as earlier ones finish.
-pub async fn scan(targets: &[Ipv4Addr], wait: Duration) -> HashMap<Ipv4Addr, Vec<u16>> {
+/// `checked` counts the liveness checks done, of `liveness_checks(targets)`.
+pub async fn scan(
+    targets: &[Ipv4Addr],
+    wait: Duration,
+    checked: &AtomicUsize,
+) -> HashMap<Ipv4Addr, Vec<u16>> {
     let deadline = Instant::now() + wait;
     let mut liveness = targets
         .iter()
@@ -47,9 +53,9 @@ pub async fn scan(targets: &[Ipv4Addr], wait: Duration) -> HashMap<Ipv4Addr, Vec
     loop {
         while set.len() < max_in_flight() {
             if let Some((ip, port, left)) = services.pop_front() {
-                set.spawn(check(ip, port, left));
+                set.spawn(async move { (false, check(ip, port, left).await) });
             } else if let Some((ip, port)) = liveness.next() {
-                set.spawn(check(ip, port, wait));
+                set.spawn(async move { (true, check(ip, port, wait).await) });
             } else {
                 break;
             }
@@ -57,7 +63,13 @@ pub async fn scan(targets: &[Ipv4Addr], wait: Duration) -> HashMap<Ipv4Addr, Vec
         let Some(joined) = set.join_next().await else {
             break;
         };
-        let Ok((ip, port, Some(open))) = joined else {
+        let Ok((is_liveness, (ip, port, open))) = joined else {
+            continue;
+        };
+        if is_liveness {
+            checked.fetch_add(1, Ordering::Relaxed);
+        }
+        let Some(open) = open else {
             continue;
         };
         if !alive.contains_key(&ip) {
@@ -75,6 +87,11 @@ pub async fn scan(targets: &[Ipv4Addr], wait: Duration) -> HashMap<Ipv4Addr, Vec
         ports.sort_unstable();
     }
     alive
+}
+
+/// How many liveness checks `scan` makes of `targets`.
+pub fn liveness_checks(targets: &[Ipv4Addr]) -> usize {
+    targets.len() * LIVENESS.len()
 }
 
 /// Every port on one host found some other way (ARP, ping, mDNS, SSDP), for

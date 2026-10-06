@@ -3,7 +3,7 @@
 //! their MAC address, which is often the only way to get one without ARP
 //! (unprivileged on macOS, say).
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::net::{Ipv4Addr, SocketAddr};
 use std::time::Duration;
@@ -12,7 +12,7 @@ use tokio::time::{Instant, timeout_at};
 
 const PORT: u16 = 137;
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct NetbiosInfo {
     /// The computer name, e.g. "DESKTOP-4F2K9QX" or "NORTHWOODSNAS".
     pub name: String,
