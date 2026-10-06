@@ -64,7 +64,10 @@ echo "Signing with $identity"
 # Notarization requires the hardened runtime and a secure timestamp.
 codesign --force --options runtime --timestamp --sign "$identity" "$bin"
 codesign --verify --strict --verbose=2 "$bin"
-codesign -dv "$bin" 2>&1 | grep -q "^TeamIdentifier=$TEAM_ID$" || die "signed by the wrong team"
+# Read it all before matching: grep -q stops at the first match, and under
+# pipefail the codesign it cut off would fail the check.
+details=$(codesign -dv "$bin" 2>&1)
+grep -q "^TeamIdentifier=$TEAM_ID$" <<<"$details" || die "signed by the wrong team"
 [[ $("$bin" --version) == "lsnet $version" ]] || die "the signed binary doesn't run"
 
 echo "Notarizing (this usually takes a minute or two)"
