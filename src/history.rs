@@ -115,8 +115,9 @@ pub struct Remembered {
     pub model: Option<String>,
     pub first_seen: u64,
     pub last_seen: u64,
-    /// Found only by ARP: no ports, no announcements. Without ARP (no root),
-    /// such a device can't be found at all, so its absence means nothing.
+    /// Found only by ARP: no open ports, no announcements. Without ARP (no
+    /// root), such a device can't be found at all, so its absence means
+    /// nothing.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub quiet: bool,
 }
@@ -499,14 +500,13 @@ fn find_device(known: &[Remembered], d: &Device, used: &[bool]) -> Option<usize>
         .max_by_key(|&i| known[i].last_seen)
 }
 
-/// Found by ARP alone: nothing it said, nothing listening.
+/// Found by ARP alone: nothing that finds devices without root (open
+/// ports, Bonjour, UPnP, Kasa) found it. What follow-up questions learn
+/// (a NetBIOS name, a web page) doesn't count: they're only asked of devices
+/// already found, so a firewalled PC that ARP found and NetBIOS named can't
+/// be found without ARP.
 fn quiet(d: &Device) -> bool {
-    d.open_ports.is_empty()
-        && d.mdns.is_none()
-        && d.ssdp.is_none()
-        && d.kasa.is_none()
-        && d.netbios.is_none()
-        && d.http.is_none()
+    d.open_ports.is_empty() && d.mdns.is_none() && d.ssdp.is_none() && d.kasa.is_none()
 }
 
 pub fn now() -> u64 {
@@ -901,6 +901,22 @@ mod tests {
         assert!(now.is_empty());
         h.annotate(&mut now, &id(), NOW, true);
         assert_eq!(now.len(), 1);
+    }
+
+    #[test]
+    fn what_follow_ups_learn_does_not_make_a_device_findable() {
+        // A firewalled PC: found by ARP, then named over NetBIOS.
+        let mut pc = device(224, Some("00:02:b3:4d:6e:01"), None);
+        pc.open_ports.clear();
+        pc.netbios = Some(crate::netbios::NetbiosInfo {
+            name: "ZILLI-9800X3D".into(),
+            mac: None,
+        });
+        let h = after(&[pc]);
+        assert!(h.networks[0].devices[0].quiet);
+        let mut now = Vec::new();
+        h.annotate(&mut now, &id(), NOW, false);
+        assert!(now.is_empty(), "not missing when scanned without root");
     }
 
     #[test]
