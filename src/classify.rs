@@ -562,7 +562,8 @@ fn from_vendor(d: &Device) -> Option<Why> {
         _ if lower.contains("chamberlain") => "Garage door",
         // TP-Link makes routers too, but those listen on ports. Silent ones
         // are smart plugs and switches with newer firmware.
-        _ if lower.contains("tp-link") && d.open_ports.is_empty() => "Smart plug",
+        // Kasa plugs answer on their own port, 9999, and nothing else.
+        _ if lower.contains("tp-link") && d.open_ports.iter().all(|&p| p == 9999) => "Smart plug",
         _ if lower.contains("sonos") => "Speaker",
         _ if lower.contains("roku") => "TV / streamer",
         _ if lower.contains("nintendo") || lower.contains("sony interactive") => "Game console",

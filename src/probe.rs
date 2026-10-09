@@ -21,11 +21,12 @@ const LIVENESS: &[u16] = &[80, 443, 22, 445, 62078, 7000, 8008, 9100];
 
 /// Probed only on hosts known to be alive, so a /24 sweep doesn't grow
 /// fivefold. Common server ports (after Vaverka's list, minus UDP-only
-/// SNMP) plus homelab apps that give themselves away by port.
+/// SNMP) plus homelab apps that give themselves away by port, and the
+/// admin pages of Synology's (5000, 5001) and UGREEN's (9443, 9999) NAS.
 const SERVICES: &[u16] = &[
-    21, 25, 53, 110, 111, 135, 139, 143, 993, 995, 1433, 1521, 1883, 3306, 3389, 5001, 5060, 5432,
-    5672, 6379, 8000, 8001, 8006, 8080, 8081, 8096, 8123, 8443, 8888, 9090, 9091, 9443, 27017,
-    32400,
+    21, 25, 53, 110, 111, 135, 139, 143, 993, 995, 1433, 1521, 1883, 3306, 3389, 5000, 5001, 5060,
+    5432, 5672, 6379, 8000, 8001, 8006, 8080, 8081, 8096, 8123, 8443, 8888, 9090, 9091, 9443, 9999,
+    27017, 32400,
 ];
 
 /// How long to wait on the ports of a host that just proved it's awake,

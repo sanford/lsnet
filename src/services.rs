@@ -10,6 +10,11 @@ use std::net::Ipv4Addr;
 /// Open ports that are how a device talks to its owner's phone, not servers.
 const DEVICE_PROTOCOLS: &[u16] = &[7000, 8008, 62078];
 
+/// Open ports that mean too many things to list unless a device's maker
+/// says what they are (see `ADMIN_PORTS`): 5000 is also a Mac's AirPlay
+/// receiver and many routers' UPnP, and 9999 a Kasa plug's own protocol.
+const AMBIGUOUS: &[u16] = &[5000, 9999];
+
 pub struct Service {
     /// Index into the scan's devices.
     pub device: usize,
@@ -71,12 +76,18 @@ impl Json {
 pub fn list(devices: &[Device]) -> Vec<Service> {
     let mut found: BTreeMap<(Ipv4Addr, u16), (usize, Option<&'static str>)> = BTreeMap::new();
     for (i, d) in devices.iter().enumerate().filter(|(_, d)| !d.this_device) {
+        let admin = admin_ports(d);
         for &port in d
             .open_ports
             .iter()
             .filter(|p| !DEVICE_PROTOCOLS.contains(p))
         {
-            found.insert((d.ip, port), (i, port_name(port)));
+            let name = match admin.iter().find(|(p, _)| *p == port) {
+                Some(&(_, name)) => Some(name),
+                None if AMBIGUOUS.contains(&port) => continue,
+                None => port_name(port),
+            };
+            found.insert((d.ip, port), (i, name));
         }
         let advertised = d.mdns.iter().flat_map(|m| &m.ports);
         for (name, &port) in
@@ -103,30 +114,56 @@ pub fn list(devices: &[Device]) -> Vec<Service> {
 
 /// Where some makers' NAS keep their admin page, in order of preference,
 /// when it isn't on port 80: Synology's DSM, UGREEN's UGOS and QNAP's QTS.
-const ADMIN_PORTS: &[(&str, &[u16])] = &[
-    ("synology", &[5001, 5000]),
-    ("ugreen", &[9443, 9999]),
-    ("qnap", &[443, 8080]),
+/// Each is known by its maker's name, or the name its NAS come with, for
+/// when the MAC vendor's hidden and UPnP is off.
+const ADMIN_PORTS: &[Admin] = &[
+    Admin {
+        names: &["synology", "diskstation"],
+        ports: &[(5001, "HTTPS"), (5000, "HTTP")],
+    },
+    Admin {
+        names: &["ugreen", "ugnas"],
+        ports: &[(9443, "HTTPS"), (9999, "HTTP")],
+    },
+    Admin {
+        names: &["qnap"],
+        ports: &[(443, "HTTPS"), (8080, "HTTP")],
+    },
 ];
 
-/// The web page to open for `devices[device]`: its maker's admin page if
-/// it's one of `ADMIN_PORTS`' and it's open, or else its first web UI by port.
-pub fn device_url(services: &[Service], devices: &[Device], device: usize) -> Option<String> {
-    let d = &devices[device];
+struct Admin {
+    names: &'static [&'static str],
+    /// Each port, and what it serves.
+    ports: &'static [(u16, &'static str)],
+}
+
+/// The admin ports of `d`'s maker, if it's one of `ADMIN_PORTS`', with
+/// what they serve.
+fn admin_ports(d: &Device) -> Vec<(u16, &'static str)> {
     let ssdp = d.ssdp.iter().flat_map(|s| [&s.manufacturer, &s.model_name]);
-    let maker = [d.vendor.map(String::from), d.model.clone()]
+    let mdns = d.mdns.iter().map(|m| &m.hostname);
+    let maker = [d.vendor.map(String::from), d.model.clone(), d.name.clone()]
         .into_iter()
         .chain(ssdp.cloned())
+        .chain(mdns.cloned())
         .flatten()
         .collect::<Vec<_>>()
         .join(" ")
         .to_lowercase();
-    let theirs: Vec<&Service> = services.iter().filter(|s| s.device == device).collect();
-    let admin = ADMIN_PORTS
+    ADMIN_PORTS
         .iter()
-        .filter(|(name, _)| maker.contains(name))
-        .flat_map(|(_, ports)| ports.iter())
-        .find_map(|&port| theirs.iter().find(|s| s.port == port)?.url());
+        .filter(|a| a.names.iter().any(|n| maker.contains(n)))
+        .flat_map(|a| a.ports.iter().copied())
+        .collect()
+}
+
+/// The web page to open for `devices[device]`: its maker's admin page if
+/// it's one of `ADMIN_PORTS`' and it's open, or else its first web UI by port.
+pub fn device_url(services: &[Service], devices: &[Device], device: usize) -> Option<String> {
+    let theirs: Vec<&Service> = services.iter().filter(|s| s.device == device).collect();
+    let admin = admin_ports(&devices[device])
+        .into_iter()
+        .find_map(|(port, _)| theirs.iter().find(|s| s.port == port)?.url());
     admin.or_else(|| theirs.iter().find_map(|s| s.url()))
 }
 
@@ -263,6 +300,42 @@ mod tests {
             Some("http://192.168.1.14/")
         );
         assert_eq!(nas("Synology", vec![22, 445]), None);
+        // Their HTTP pages, on ports that mean other things elsewhere.
+        assert_eq!(
+            nas("Synology", vec![80, 5000]).as_deref(),
+            Some("http://192.168.1.14:5000/")
+        );
+        assert_eq!(
+            nas("Ugreen", vec![9999]).as_deref(),
+            Some("http://192.168.1.14:9999/")
+        );
+        // Without a vendor, by the name it came with.
+        let mut ugnas = Device::new(Ipv4Addr::new(192, 168, 1, 16));
+        ugnas.name = Some("UGNAS".into());
+        ugnas.open_ports = vec![80, 8123, 9443, 9999];
+        let devices = vec![ugnas];
+        assert_eq!(
+            device_url(&list(&devices), &devices, 0).as_deref(),
+            Some("https://192.168.1.16:9443/")
+        );
+    }
+
+    #[test]
+    fn ambiguous_ports_are_listed_only_for_their_nas() {
+        let mut mac = Device::new(Ipv4Addr::new(192, 168, 1, 20));
+        mac.vendor = Some("Apple");
+        mac.open_ports = vec![5000, 7000];
+        let mut plug = Device::new(Ipv4Addr::new(192, 168, 1, 21));
+        plug.vendor = Some("TP-Link");
+        plug.open_ports = vec![9999];
+        let mut nas = Device::new(Ipv4Addr::new(192, 168, 1, 22));
+        nas.vendor = Some("Synology");
+        nas.open_ports = vec![5000];
+        let listed: Vec<(u16, Option<&str>)> = list(&[mac, plug, nas])
+            .iter()
+            .map(|s| (s.port, s.name))
+            .collect();
+        assert_eq!(listed, [(5000, Some("HTTP"))]);
     }
 
     #[test]

@@ -226,7 +226,7 @@ It lists the open ports `lsnet` found (all but AirPlay, Cast and iPhone sync, wh
 Most things on a home network have a web page: the router, the printer, the NAS, Home Assistant, Plex, Proxmox, a Pi-hole. Press `w` in the browser and the selected one opens in your default browser. `w open` is in the footer whenever there's something to open.
 
 - **In the services view,** `w` opens the service on the selected row: `https://` for HTTPS (ports 443, 5001, 8443, 9443), Proxmox and WebDAVS, and `http://` for HTTP, HTTP alt (8000, 8080 and the like), Home Assistant, Plex, Jellyfin, ESPHome, OctoPrint, Umbrel, Prometheus and WebDAV, on whatever port `lsnet` found it. Plex opens at `/web`, its web app.
-- **In the devices view,** `w` opens the device's web UI: for a NAS from Synology, UGREEN or QNAP, its maker's admin page (DSM on 5001 or 5000, UGOS on 9443 or 9999, QTS on 443 or 8080), and for anything else, its first web UI by port.
+- **In the devices view,** `w` opens the device's web UI: for a NAS from Synology, UGREEN or QNAP (known by its maker, or by the name it came with, like `DiskStation` or `UGNAS`), its maker's admin page (DSM on 5001 or 5000, UGOS on 9443 or 9999, QTS on 443 or 8080), and for anything else, its first web UI by port. Ports 5000 and 9999 are listed as services only on those NAS: elsewhere they're a Mac's AirPlay receiver, a router's UPnP or a Kasa plug.
 
 SSH, file shares, VNC and the like have no `w`: only pages a browser can show are opened. Pages are opened with `open` on macOS, `xdg-open` on Linux, and the default browser on Windows.
 
@@ -452,7 +452,7 @@ In `--json`, each device includes:
 | `type`, `model`, `type_from` | What `lsnet` thinks the device is, and the evidence that decided it |
 | `hostname` | Reverse DNS name |
 | `randomized_mac` | The device uses a private, per-network MAC (typical of phones and laptops) |
-| `open_ports` | Which of the probed ports are open. Every address is checked for 22, 80, 443, 445, 7000, 8008, 9100 and 62078, and every live device also for 21, 25, 53, 110, 111, 135, 139, 143, 993, 995, 1433, 1521, 1883, 3306, 3389, 5001, 5060, 5432, 5672, 6379, 8000, 8001, 8006, 8080, 8081, 8096, 8123, 8443, 8888, 9090, 9091, 9443, 27017 and 32400 |
+| `open_ports` | Which of the probed ports are open. Every address is checked for 22, 80, 443, 445, 7000, 8008, 9100 and 62078, and every live device also for 21, 25, 53, 110, 111, 135, 139, 143, 993, 995, 1433, 1521, 1883, 3306, 3389, 5000, 5001, 5060, 5432, 5672, 6379, 8000, 8001, 8006, 8080, 8081, 8096, 8123, 8443, 8888, 9090, 9091, 9443, 9999, 27017 and 32400 |
 | `gateway`, `this_device` | Your router, and the machine running the scan |
 | `flags`, `other_macs`, `other_ips` | Address problems (see [Address problems](#address-problems)), the other MACs in an address conflict, and any addresses from other networks the device also uses |
 | `first_seen`, `changes` | When `lsnet` first saw the device on this network, in Unix seconds, and what changed since the last scan: `new`, `moved` (with `from`) or `renamed` (with `from`). See [What changed since last time](#what-changed-since-last-time) |
