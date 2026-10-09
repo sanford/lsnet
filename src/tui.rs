@@ -781,6 +781,17 @@ impl App {
         }
     }
 
+    /// A pane's border: in lsnet's accent while it has the keyboard, dim
+    /// while the other pane does, as lsmd and lshn do.
+    fn pane(&self, title: impl Into<Line<'static>>, focused: bool) -> Block<'static> {
+        let border = if focused {
+            Style::new().cyan()
+        } else {
+            Style::new().dim()
+        };
+        Block::bordered().title(title).border_style(border)
+    }
+
     /// The list's selected row: reversed while the list has the keyboard,
     /// and only bold while the details do.
     fn row_highlight(&self) -> Style {
@@ -896,7 +907,10 @@ impl App {
         ];
         let table = Table::new(rows, widths)
             .header(Row::new(["ADDRESS", "SERVICE", "HOST"]).bold())
-            .block(Block::bordered().title(self.list_title("Services", self.services.len())))
+            .block(self.pane(
+                self.list_title("Services", self.services.len()),
+                self.focus == Focus::List,
+            ))
             .row_highlight_style(self.row_highlight())
             .highlight_symbol("› ");
         f.render_stateful_widget(table, area, &mut self.table);
@@ -937,7 +951,10 @@ impl App {
         }
         let table = Table::new(rows, widths)
             .header(Row::new(header).bold())
-            .block(Block::bordered().title(self.list_title("Devices", self.scan.devices.len())))
+            .block(self.pane(
+                self.list_title("Devices", self.scan.devices.len()),
+                self.focus == Focus::List,
+            ))
             .row_highlight_style(self.row_highlight())
             .highlight_symbol("› ");
         f.render_stateful_widget(table, area, &mut self.table);
@@ -950,17 +967,15 @@ impl App {
                 (true, false) => "No services match the filter.",
                 (false, _) => "No devices match the filter.",
             };
-            let empty = Paragraph::new(what.dim()).block(Block::bordered());
+            let empty =
+                Paragraph::new(what.dim()).block(self.pane("", self.focus == Focus::Details));
             f.render_widget(empty, area);
             return;
         };
         let title = d.name.clone().unwrap_or_else(|| d.ip.to_string());
-        let mut block = Block::bordered()
-            .title(format!(" {title} ").bold())
+        let block = self
+            .pane(format!(" {title} ").bold(), self.focus == Focus::Details)
             .padding(Padding::horizontal(1));
-        if self.focus == Focus::Details {
-            block = block.border_style(Style::new().cyan());
-        }
         let inner = block.inner(area);
         let mut items = details(d, inner.width);
         self.detail_width = inner.width;
@@ -1939,6 +1954,29 @@ mod tests {
             modifiers: KeyModifiers::NONE,
         });
         assert_eq!(app.selected_ip().unwrap().to_string(), "192.168.1.60");
+    }
+
+    #[test]
+    fn the_pane_with_the_keyboard_is_outlined() {
+        let mut app = App::new(crate::demo::scan(), false);
+        // The top-left corners of the list and of the details.
+        let corners = |app: &mut App| {
+            let backend = ratatui::backend::TestBackend::new(124, 40);
+            let mut terminal = ratatui::Terminal::new(backend).unwrap();
+            terminal.draw(|f| app.draw(f)).unwrap();
+            let buffer = terminal.backend().buffer().clone();
+            let x = (0..124)
+                .find(|&x| x > 0 && buffer[(x, 2)].symbol() == "┌")
+                .unwrap();
+            (buffer[(0, 2)].style(), buffer[(x, 2)].style())
+        };
+        let (list, details) = corners(&mut app);
+        assert_eq!(list.fg, Some(Color::Cyan));
+        assert!(details.add_modifier.contains(Modifier::DIM));
+        press(&mut app, KeyCode::Tab);
+        let (list, details) = corners(&mut app);
+        assert!(list.add_modifier.contains(Modifier::DIM));
+        assert_eq!(details.fg, Some(Color::Cyan));
     }
 
     #[test]
