@@ -41,8 +41,9 @@ It's meant to answer the question "what is that?" faster and more simply than [n
 - **Identifies devices, not just addresses.** It combines what devices announce about themselves (Bonjour, UPnP, Windows and Samba NetBIOS names), their naming conventions, web UI banners, open ports (including homelab staples like Proxmox, Plex and Home Assistant) and MAC vendors into a type and a model.
 - **Works without root.** On Linux and Windows you even get MAC addresses and vendors without it. On macOS, some come through anyway: Windows and Samba hosts report theirs over NetBIOS, and AirPlay speakers and Linux machines put theirs in their Bonjour names.
 - **macOS, Linux and Windows.**
-- **Browse or print.** In a terminal, `lsnet` opens a browser with everything known about each device. When piped, or with `-l`, it prints a table.
-- **Find your servers.** `2` in the browser, or `-s`, lists every service on the network (web UIs, SSH, file shares, databases, Plex, Proxmox, Home Assistant) with the address to reach it, and `w` opens a web UI in your browser.
+- **Browse or print.** In a terminal, `lsnet` opens a browser with everything known about each device, and any line of it copies with a keypress. When piped, or with `-l`, it prints a table.
+- **Find your servers.** `2` in the browser, or `-s`, lists every service on the network (web UIs, SSH, file shares, databases, Plex, Proxmox, Home Assistant) with the address to reach it.
+- **One key to its web page.** Press `w` on a router, a printer, a NAS or a Plex server and its web UI opens in your browser, at the right port and scheme: DSM on a Synology, not port 80. No more typing `https://192.168.1.14:5001` from memory. See [Opening web UIs](#opening-web-uis).
 - **Says what changed.** It remembers each network, so the next scan points out new devices, ones that moved or were renamed, and ones that didn't answer.
 - **Scriptable.** `--json` outputs every piece of evidence behind each identification.
 
@@ -148,6 +149,8 @@ lsnet --demo           # try it without a network
 
 Run in a terminal, `lsnet` opens the browser shown at the top. Devices are listed on the left, and everything `lsnet` learned about the selected one is on the right: open ports, Bonjour services with their TXT records, UPnP details and the web page banner.
 
+The first line has the two tabs, **1 Devices** and **2 Services** (see [The services view](#the-services-view)): press `1` or `2` to switch. The second sums up the scan: what was scanned, what it's still waiting for, how many addresses are wrong (see [Address problems](#address-problems)) and anything it couldn't see, such as the tip to run with `sudo`. The footer shows the keys that fit, most useful first, and `w` only when there's a web page to open; `?` lists them all.
+
 Devices appear as soon as they're found, and the details fill in as `lsnet` asks each one more questions. The header says what it's still waiting for, which on a large network includes how far the port probe has got. Once the scan is done, the browser keeps listening, to Bonjour announcements and (with `sudo`) ARP. A device heard then, such as a phone waking up, is added to the list and asked the same questions as the rest. Its details say it was heard after the scan. Nothing else is sent while it listens.
 
 Press `?` to see every key:
@@ -161,7 +164,7 @@ Press `?` to see every key:
 | `Tab`, `←`, `h` or `Esc` | Back from the details to the list |
 | `Enter` or `y` | Copy the selected IP address (or, for a service, its address and port) to the clipboard |
 | `c` | Copy all the details to the clipboard as plain text |
-| `w` | Open the web page in your browser: the selected service's, or the device's: a Synology, UGREEN or QNAP NAS's admin page, or else its first web UI. Shown in the footer when there is one |
+| `w` | Open the device's or service's web UI in your browser (see [Opening web UIs](#opening-web-uis)) |
 | `Enter` or `c` in the details | Copy the selected line's value: a MAC address, a hostname, a TXT record's value |
 | `PgUp` `PgDn` or `Ctrl-u` `Ctrl-d` | Scroll the details by half a page |
 | `J` `K` | Scroll the details by one line |
@@ -179,7 +182,7 @@ Selecting text with the mouse picks up both panes, so use `c` to copy the detail
 
 ### The services view
 
-Press `2` in the browser, or start it with `lsnet -s`, to list services instead of devices: one row per server, sorted by address, with the device's details beside it as usual. On a web UI (HTTP, HTTPS, Proxmox, Plex, Home Assistant and the like), `w` opens it in your browser.
+Press `2` in the browser, or start it with `lsnet -s`, to list services instead of devices: one row per server, sorted by address, with the device's details beside it as usual. The port is in bold, since it's what tells one row from the next.
 
 ```
 $ lsnet -s
@@ -217,6 +220,15 @@ $ lsnet -s
 ```
 
 It lists the open ports `lsnet` found (all but AirPlay, Cast and iPhone sync, which are how devices talk to phones rather than servers) plus the web, SSH, file-sharing, VNC and similar services devices advertise over Bonjour, on whatever port they use. This machine's own services aren't listed, since `lsnet` doesn't probe it. `lsnet -s -l` prints the same list as a table (see [Text output](#text-output)), and `lsnet -s --json` gives `ip`, `port`, `service` and `host` for each.
+
+### Opening web UIs
+
+Most things on a home network have a web page: the router, the printer, the NAS, Home Assistant, Plex, Proxmox, a Pi-hole. Press `w` in the browser and the selected one opens in your default browser. `w open` is in the footer whenever there's something to open.
+
+- **In the services view,** `w` opens the service on the selected row: `https://` for HTTPS (ports 443, 5001, 8443, 9443), Proxmox and WebDAVS, and `http://` for HTTP, HTTP alt (8000, 8080 and the like), Home Assistant, Plex, Jellyfin, ESPHome, OctoPrint, Umbrel, Prometheus and WebDAV, on whatever port `lsnet` found it. Plex opens at `/web`, its web app.
+- **In the devices view,** `w` opens the device's web UI: for a NAS from Synology, UGREEN or QNAP, its maker's admin page (DSM on 5001 or 5000, UGOS on 9443 or 9999, QTS on 443 or 8080), and for anything else, its first web UI by port.
+
+SSH, file shares, VNC and the like have no `w`: only pages a browser can show are opened. Pages are opened with `open` on macOS, `xdg-open` on Linux, and the default browser on Windows.
 
 ### Text output
 
@@ -387,7 +399,7 @@ It holds, for each network, its subnet and its router's address, MAC, UPnP ident
 | `off-subnet` | The device is on this network segment, but using an address from another network, usually a static one left over from somewhere else |
 | `address-conflict` | More than one device answered for the same address |
 
-Flagged devices have their IP shown in yellow (red for a conflict), a line under the results saying what's wrong, and an explanation in the details. `/conflict`, `/link-local` and `/off-subnet` filter for them. Devices on the wrong network can't be reached through this one, so `lsnet` lists them with what they said about themselves, but doesn't probe them.
+Flagged devices have their IP shown in yellow (red for a conflict) and an explanation in the details. Printed tables end with a line for each saying what's wrong, and the browser's header counts them, like `1 address conflict`. `/conflict`, `/link-local` and `/off-subnet` filter for them. Devices on the wrong network can't be reached through this one, so `lsnet` lists them with what they said about themselves, but doesn't probe them.
 
 Most of this comes from listening to ARP, which needs raw access (`sudo` on macOS and Linux, or `setcap`). Without it, `lsnet` still finds `link-local` devices that answer Bonjour, but not the other two flags. Windows reports only one MAC per address, so there only Bonjour's `link-local` devices are found. On Linux, strict reverse-path filtering (`rp_filter = 1`) drops Bonjour replies from self-assigned addresses before `lsnet` sees them; the default on most distributions (`2`) lets them through.
 
