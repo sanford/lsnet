@@ -76,7 +76,7 @@ impl Json {
 pub fn list(devices: &[Device]) -> Vec<Service> {
     let mut found: BTreeMap<(Ipv4Addr, u16), (usize, Option<&'static str>)> = BTreeMap::new();
     for (i, d) in devices.iter().enumerate().filter(|(_, d)| !d.this_device) {
-        let admin = admin_ports(d);
+        let admin = admin(d).map_or(&[][..], |a| a.ports);
         for &port in d
             .open_ports
             .iter()
@@ -117,17 +117,21 @@ pub fn list(devices: &[Device]) -> Vec<Service> {
 /// Each is known by its maker's name, or the name its NAS come with, for
 /// when the MAC vendor's hidden and UPnP is off.
 const ADMIN_PORTS: &[Admin] = &[
+    // 80 and 443 are Web Station's, which until it's set up only says so.
     Admin {
         names: &["synology", "diskstation"],
         ports: &[(5001, "HTTPS"), (5000, "HTTP")],
+        last: &[80, 443],
     },
     Admin {
         names: &["ugreen", "ugnas"],
         ports: &[(9443, "HTTPS"), (9999, "HTTP")],
+        last: &[],
     },
     Admin {
         names: &["qnap"],
         ports: &[(443, "HTTPS"), (8080, "HTTP")],
+        last: &[],
     },
 ];
 
@@ -135,11 +139,12 @@ struct Admin {
     names: &'static [&'static str],
     /// Each port, and what it serves.
     ports: &'static [(u16, &'static str)],
+    /// Web ports to open only when nothing else will.
+    last: &'static [u16],
 }
 
-/// The admin ports of `d`'s maker, if it's one of `ADMIN_PORTS`', with
-/// what they serve.
-fn admin_ports(d: &Device) -> Vec<(u16, &'static str)> {
+/// `d`'s maker's entry in `ADMIN_PORTS`, if it has one.
+fn admin(d: &Device) -> Option<&'static Admin> {
     let ssdp = d.ssdp.iter().flat_map(|s| [&s.manufacturer, &s.model_name]);
     let mdns = d.mdns.iter().map(|m| &m.hostname);
     let maker = [d.vendor.map(String::from), d.model.clone(), d.name.clone()]
@@ -152,19 +157,24 @@ fn admin_ports(d: &Device) -> Vec<(u16, &'static str)> {
         .to_lowercase();
     ADMIN_PORTS
         .iter()
-        .filter(|a| a.names.iter().any(|n| maker.contains(n)))
-        .flat_map(|a| a.ports.iter().copied())
-        .collect()
+        .find(|a| a.names.iter().any(|n| maker.contains(n)))
 }
 
 /// The web page to open for `devices[device]`: its maker's admin page if
-/// it's one of `ADMIN_PORTS`' and it's open, or else its first web UI by port.
+/// it's one of `ADMIN_PORTS`' and it's open, or else its first web UI by
+/// port, leaving the ones its maker's are known to waste until last.
 pub fn device_url(services: &[Service], devices: &[Device], device: usize) -> Option<String> {
     let theirs: Vec<&Service> = services.iter().filter(|s| s.device == device).collect();
-    let admin = admin_ports(&devices[device])
-        .into_iter()
-        .find_map(|(port, _)| theirs.iter().find(|s| s.port == port)?.url());
-    admin.or_else(|| theirs.iter().find_map(|s| s.url()))
+    let Some(admin) = admin(&devices[device]) else {
+        return theirs.iter().find_map(|s| s.url());
+    };
+    let page = admin
+        .ports
+        .iter()
+        .find_map(|&(port, _)| theirs.iter().find(|s| s.port == port)?.url());
+    let (last, rest): (Vec<&Service>, Vec<&Service>) =
+        theirs.iter().partition(|s| admin.last.contains(&s.port));
+    page.or_else(|| rest.iter().chain(&last).find_map(|s| s.url()))
 }
 
 /// Bonjour service types that are servers someone would want to reach.
@@ -290,9 +300,17 @@ mod tests {
             nas("Ugreen", vec![80, 9443]).as_deref(),
             Some("https://192.168.1.14:9443/")
         );
-        // Its admin port closed, the first web UI as for anything else.
+        // Its admin port closed, the first web UI, and Web Station's last.
         assert_eq!(
-            nas("Synology", vec![22, 80]).as_deref(),
+            nas("Synology", vec![22, 80, 443]).as_deref(),
+            Some("http://192.168.1.14/")
+        );
+        assert_eq!(
+            nas("Synology", vec![80, 443, 32400]).as_deref(),
+            Some("http://192.168.1.14:32400/web")
+        );
+        assert_eq!(
+            nas("Ugreen", vec![22, 80]).as_deref(),
             Some("http://192.168.1.14/")
         );
         assert_eq!(
