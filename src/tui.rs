@@ -6,8 +6,11 @@ use crate::history::{self, Change};
 use crate::live::{Feed, Update};
 use crate::services::{self, Service, port_name};
 use crate::{Device, NOISY_SERVICES, PING, Scan, change_words, ip_alarm, kind_label};
-use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::crossterm::event::{
+    self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent,
+    MouseEventKind,
+};
+use ratatui::layout::{Constraint, Layout, Position, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
@@ -75,17 +78,53 @@ struct Item {
 }
 
 /// Browse until the user quits, returning the latest scan and whether the
-/// services view was showing.
-pub fn run(start: impl Fn() -> Feed, show_services: bool) -> Result<(Scan, bool), String> {
+/// services view was showing. With `mouse`, clicks and the wheel come to
+/// lsnet rather than the terminal.
+pub fn run(
+    start: impl Fn() -> Feed,
+    show_services: bool,
+    mouse: bool,
+) -> Result<(Scan, bool), String> {
     let mut terminal = ratatui::init();
+    set_mouse(mouse, true);
     let mut app = App::new(Scan::empty(), show_services);
     app.feed = Some(start());
     app.has_results = false;
     let result = app
         .run(&mut terminal, &start)
         .map(|()| (app.scan, app.show_services));
+    set_mouse(mouse, false);
     ratatui::restore();
     result
+}
+
+/// Turns mouse reporting on or off, if lsnet uses the mouse.
+fn set_mouse(used: bool, on: bool) {
+    use ratatui::crossterm::event::{DisableMouseCapture, EnableMouseCapture};
+    use ratatui::crossterm::execute;
+    if used {
+        let _ = if on {
+            execute!(std::io::stdout(), EnableMouseCapture)
+        } else {
+            execute!(std::io::stdout(), DisableMouseCapture)
+        };
+    }
+}
+
+/// Where the last draw put what a click can land on.
+#[derive(Default)]
+struct Hits {
+    /// The header's tabs: from, to, and whether it's services.
+    tabs: Vec<(u16, u16, bool)>,
+    header_y: u16,
+    /// The list's rows, under its column headings.
+    list: Rect,
+    /// The details' text, and the line each item starts on.
+    details: Rect,
+    item_starts: Vec<usize>,
+    /// The footer's hints: from, to, and the key each stands for.
+    footer: Vec<(u16, u16, KeyCode)>,
+    footer_y: u16,
 }
 
 struct App {
@@ -115,6 +154,7 @@ struct App {
     /// Whether any results have arrived yet.
     has_results: bool,
     started: Instant,
+    hits: Hits,
 }
 
 impl App {
@@ -139,6 +179,7 @@ impl App {
             status: String::new(),
             has_results: true,
             started: Instant::now(),
+            hits: Hits::default(),
         };
         app.refilter(None);
         app
@@ -195,13 +236,12 @@ impl App {
             if !event::poll(Duration::from_millis(120)).map_err(|e| e.to_string())? {
                 continue;
             }
-            let Event::Key(key) = event::read().map_err(|e| e.to_string())? else {
-                continue;
+            let action = match event::read().map_err(|e| e.to_string())? {
+                Event::Key(key) if key.kind == KeyEventKind::Press => self.key(emacs(key)),
+                Event::Mouse(m) => self.mouse(m),
+                _ => continue,
             };
-            if key.kind != KeyEventKind::Press {
-                continue;
-            }
-            match self.key(emacs(key)) {
+            match action {
                 Action::Stay => {}
                 Action::Quit => return Ok(()),
                 Action::Rescan => {
@@ -275,6 +315,77 @@ impl App {
             KeyCode::Char('?') => self.show_help = true,
             KeyCode::Char('r') => return Action::Rescan,
             _ => {}
+        }
+        Action::Stay
+    }
+
+    /// A click or the wheel: on a tab, a footer hint, a row of the list or
+    /// a line of the details. Clicking what's already selected copies it.
+    fn mouse(&mut self, m: MouseEvent) -> Action {
+        let at = Position {
+            x: m.column,
+            y: m.row,
+        };
+        let down = match m.kind {
+            MouseEventKind::ScrollDown => 1,
+            MouseEventKind::ScrollUp => -1,
+            MouseEventKind::Down(MouseButton::Left) => 0,
+            _ => return Action::Stay,
+        };
+        if self.show_help {
+            self.show_help = false;
+            return Action::Stay;
+        }
+        self.typing_filter = false;
+        let hits = &self.hits;
+        let row = |area: Rect| usize::from(at.y - area.y);
+        if hits.list.contains(at) {
+            let row = self.table.offset() + row(hits.list);
+            if down != 0 {
+                let i = self.table.selected().unwrap_or(0) as isize + down;
+                self.select(i.max(0) as usize);
+            } else if row < self.visible.len() {
+                if self.focus == Focus::List && self.table.selected() == Some(row) {
+                    self.copy_ip();
+                }
+                self.select(row);
+                self.focus = Focus::List;
+            }
+        } else if hits.details.contains(at) {
+            let line = usize::from(self.detail_scroll) + row(hits.details);
+            let item = hits.item_starts.iter().take_while(|&&s| s <= line).count();
+            match (down, self.focus) {
+                (0, _) if item == 0 => {}
+                (0, Focus::Details) if self.detail_cursor == item - 1 => self.copy_item(),
+                (0, _) => {
+                    let copyable = self
+                        .items()
+                        .get(item - 1)
+                        .is_some_and(|it| it.copy.is_some());
+                    if copyable {
+                        self.focus = Focus::Details;
+                        self.detail_cursor = item - 1;
+                    }
+                }
+                (_, Focus::Details) => self.move_cursor(down),
+                (_, Focus::List) => self.scroll_detail(3 * down as i32),
+            }
+        } else if down == 0 && at.y == hits.header_y {
+            let tab = hits
+                .tabs
+                .iter()
+                .find(|&&(from, to, _)| (from..to).contains(&at.x));
+            if let Some(&(_, _, services)) = tab {
+                self.show(services);
+            }
+        } else if down == 0 && at.y == hits.footer_y {
+            let hint = hits
+                .footer
+                .iter()
+                .find(|&&(from, to, _)| (from..to).contains(&at.x));
+            if let Some(&(_, _, code)) = hint {
+                return self.key(KeyEvent::from(code));
+            }
         }
         Action::Stay
     }
@@ -538,7 +649,22 @@ impl App {
             Constraint::Length(1),
         ])
         .areas(f.area());
-        f.render_widget(Paragraph::new(vec![self.tabs(), self.summary()]), header);
+        self.hits = Hits {
+            header_y: header.y,
+            footer_y: footer.y,
+            ..Hits::default()
+        };
+        let tabs = self.tabs();
+        // Each tab's span, by where the spans before it end.
+        let mut x = header.x;
+        for (i, span) in tabs.spans.iter().enumerate() {
+            let w = span.width() as u16;
+            if i == 2 || i == 4 {
+                self.hits.tabs.push((x, x + w, i == 4));
+            }
+            x += w;
+        }
+        f.render_widget(Paragraph::new(vec![tabs, self.summary()]), header);
 
         if body.width < WIDE {
             // Room for one: the list, or the details it went into.
@@ -641,6 +767,13 @@ impl App {
     }
 
     fn draw_either_list(&mut self, f: &mut Frame, area: Rect) {
+        // Inside the border, under the column headings.
+        self.hits.list = Rect {
+            x: area.x + 1,
+            y: area.y + 2,
+            width: area.width.saturating_sub(2),
+            height: area.height.saturating_sub(3),
+        };
         if self.show_services {
             self.draw_services(f, area);
         } else {
@@ -852,6 +985,15 @@ impl App {
                 }
             }
         }
+        self.hits.details = inner;
+        self.hits.item_starts = items
+            .iter()
+            .scan(0, |line, it| {
+                let at = *line;
+                *line += it.lines.len();
+                Some(at)
+            })
+            .collect();
         lines.extend(items.into_iter().flat_map(|it| it.lines));
         let para = Paragraph::new(lines);
         self.detail_lines = para.line_count(inner.width) as u16;
@@ -871,7 +1013,7 @@ impl App {
         }
     }
 
-    fn draw_footer(&self, f: &mut Frame, area: Rect) {
+    fn draw_footer(&mut self, f: &mut Frame, area: Rect) {
         let line = if self.typing_filter {
             Line::from(vec![
                 " /".bold(),
@@ -938,10 +1080,25 @@ impl App {
                 keys.remove(least);
             }
             let mut spans = vec![Span::raw(" ")];
+            let mut x = area.x + 1;
             for (i, (k, what, _)) in keys.into_iter().enumerate() {
                 if i > 0 {
                     spans.push(Span::raw("  "));
+                    x += 2;
                 }
+                // Each hint clicks as its key.
+                let w = (k.chars().count() + 1 + what.len()) as u16;
+                let code = match k {
+                    "tab" => Some(KeyCode::Tab),
+                    "esc" => Some(KeyCode::Esc),
+                    "⏎" | "⏎ c" => Some(KeyCode::Enter),
+                    "↑↓" => None,
+                    _ => k.chars().next().map(KeyCode::Char),
+                };
+                if let Some(code) = code {
+                    self.hits.footer.push((x, x + w, code));
+                }
+                x += w;
                 spans.push(k.bold());
                 spans.push(Span::raw(format!(" {what}")).dim());
             }
@@ -1710,6 +1867,78 @@ mod tests {
         // Filtering, esc clears it in place of / starting one.
         app.filter = "nas".into();
         assert!(footer(&mut app, 124).contains("esc clear filter  r rescan"));
+    }
+
+    fn click(app: &mut App, x: u16, y: u16) -> Action {
+        app.mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: x,
+            row: y,
+            modifiers: KeyModifiers::NONE,
+        })
+    }
+
+    /// Where `text` is on screen, as drawn `width` wide.
+    fn find(app: &mut App, width: u16, text: &str) -> (u16, u16) {
+        let screen = drawn(app, width);
+        screen
+            .lines()
+            .enumerate()
+            .find_map(|(y, line)| {
+                let at = line.find(text)?;
+                Some((line[..at].chars().count() as u16, y as u16))
+            })
+            .unwrap_or_else(|| panic!("{text:?} isn't on screen:\n{screen}"))
+    }
+
+    #[test]
+    fn clicks_switch_tabs_panes_and_rows() {
+        let mut app = App::new(crate::demo::scan(), false);
+        // The Services tab.
+        let (x, y) = find(&mut app, 124, "2 Services");
+        click(&mut app, x + 3, y);
+        assert!(app.show_services);
+        let (x, y) = find(&mut app, 124, "1 Devices");
+        click(&mut app, x, y);
+        assert!(!app.show_services);
+        // A row of the list selects it.
+        let (x, y) = find(&mut app, 124, "192.168.1.52 ");
+        click(&mut app, x, y);
+        assert_eq!(app.selected_ip().unwrap().to_string(), "192.168.1.52");
+        assert_eq!(app.focus, Focus::List);
+        // A line of the details puts the cursor on it.
+        let (x, y) = find(&mut app, 124, "f0:18:98:3c:62:8d");
+        click(&mut app, x, y);
+        assert_eq!(app.focus, Focus::Details);
+        let item = app.items().into_iter().nth(app.detail_cursor).unwrap();
+        assert_eq!(item.copy.as_deref(), Some("f0:18:98:3c:62:8d"));
+        // A heading has nothing to copy, so nothing happens.
+        let cursor = app.detail_cursor;
+        let (x, y) = find(&mut app, 124, "Bonjour (mDNS)");
+        click(&mut app, x, y);
+        assert_eq!(app.detail_cursor, cursor);
+        // The wheel moves the cursor while the details have it.
+        app.mouse(MouseEvent {
+            kind: MouseEventKind::ScrollDown,
+            column: x,
+            row: y,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert_eq!(app.detail_cursor, cursor + 1);
+        // A footer hint clicks as its key: `tab list` goes back.
+        drawn(&mut app, 124);
+        let (x, y) = find(&mut app, 124, "tab list");
+        click(&mut app, x, y);
+        assert_eq!(app.focus, Focus::List);
+        // The wheel over the list moves down it.
+        let (x, y) = find(&mut app, 124, "192.168.1.52    Living Room");
+        app.mouse(MouseEvent {
+            kind: MouseEventKind::ScrollDown,
+            column: x,
+            row: y,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert_eq!(app.selected_ip().unwrap().to_string(), "192.168.1.60");
     }
 
     #[test]

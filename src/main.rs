@@ -83,6 +83,10 @@ struct Args {
     #[arg(long)]
     no_history: bool,
 
+    /// Leave the mouse to the terminal, so its own text selection works
+    #[arg(long)]
+    no_mouse: bool,
+
     /// Show what lsnet remembers about the networks it has scanned, and
     /// delete it
     #[arg(long, exclusive = true)]
@@ -239,6 +243,7 @@ fn run(args: Args) -> Result<(), String> {
         tui::run(
             || live::start(args.clone(), memory.clone(), true),
             args.services,
+            !args.no_mouse,
         )?
     } else if std::io::stderr().is_terminal() {
         let dim = |s: String| {

@@ -128,6 +128,7 @@ lsnet [OPTIONS]
       --no-dns            Skip reverse DNS lookups
       --demo              Show a made-up network instead of scanning (no packets are sent)
       --no-history        Don't compare with earlier scans of this network, or remember this one
+      --no-mouse          Leave the mouse to the terminal, so its own text selection works
       --forget            Show what lsnet remembers about the networks it has scanned, and delete it
 ```
 
@@ -176,9 +177,11 @@ Press `?` to see every key:
 
 Emacs keys work too: `Ctrl-n` `Ctrl-p` move down and up, `Ctrl-v` `Alt-v` scroll the details like `PgDn` `PgUp`, `Alt-<` `Alt->` jump to the first or last row, and `Ctrl-g` clears the filter (it never quits).
 
+So does the mouse. Click a tab (`1 Devices`, `2 Services`) to switch to it, a row of the list to select it, or a line of the details to go into them with that line selected. Click what's already selected to copy it: a row's IP address (or a service's address and port), or a line's value. The wheel moves through the list, or scrolls the details, and every hint in the footer clicks as its key, so `w open` opens the web page. `--no-mouse` leaves the mouse to the terminal; most terminals still select text while you hold `Shift` (`Option` in iTerm2).
+
 Under the type and model, the details say what decided them and where the name came from, for example `Type from  Bonjour airplay model = AppleTV14,1` and `Name from  AirPlay`. If `lsnet` gets a device wrong, that line points at the rule to fix.
 
-Selecting text with the mouse picks up both panes, so use `c` to copy the details instead. It copies every line, including any scrolled out of view, without wrapping. For just one value, press `Tab` to go into the details, move to its line and press `Enter` or `c`. On a terminal narrower than 80 columns there's only room for the list, and `Tab` shows the details in its place. Copying uses `pbcopy` on macOS, `wl-copy`, `xclip` or `xsel` on Linux, and the clipboard directly on Windows. Without any of those, `lsnet` asks the terminal to do the copy, which also works over SSH in most modern terminals.
+To copy all the details, press `c`: it copies every line, including any scrolled out of view, without wrapping, which selecting them with the mouse can't. For just one value, click its line twice, or press `Tab` to go into the details, move to its line and press `Enter` or `c`. On a terminal narrower than 80 columns there's only room for the list, and `Tab` shows the details in its place. Copying uses `pbcopy` on macOS, `wl-copy`, `xclip` or `xsel` on Linux, and the clipboard directly on Windows. Without any of those, `lsnet` asks the terminal to do the copy, which also works over SSH in most modern terminals.
 
 ### The services view
 
