@@ -726,7 +726,12 @@ impl App {
         let rows = self.visible.iter().map(|&i| {
             let s = &self.services[i];
             Row::new([
-                Cell::from(s.address()).green(),
+                // The port's what tells one row from the next.
+                Cell::from(Line::from(vec![
+                    Span::raw(s.ip.to_string()).green(),
+                    Span::raw(":").green().dim(),
+                    Span::raw(s.port.to_string()).green().bold(),
+                ])),
                 Cell::from(s.name.map_or_else(|| Span::raw("·").dark_gray(), Span::raw)),
                 Cell::from(list_name(&self.scan.devices[s.device])),
             ])
