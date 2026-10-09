@@ -883,46 +883,69 @@ impl App {
         } else if let Some((msg, _)) = &self.flash {
             Line::from(format!(" {msg}")).green()
         } else {
-            let mut keys = vec![
-                ("↑↓", "move"),
-                ("tab", "details"),
-                (
-                    "⏎",
-                    if self.show_services {
-                        "copy address"
-                    } else {
-                        "copy IP"
-                    },
-                ),
-                ("c", "copy details"),
-                ("w", "open"),
-                ("/", "filter"),
-                ("r", "rescan"),
-                ("?", "help"),
-                ("q", "quit"),
-            ];
-            if !self.filter.is_empty() {
-                keys.insert(6, ("esc", "clear filter"));
-            }
-            if self.focus == Focus::Details {
-                keys = vec![
-                    ("↑↓", "move"),
-                    ("⏎ c", "copy line"),
-                    ("y", "copy IP"),
-                    ("w", "open"),
-                    ("tab", "list"),
-                    ("?", "help"),
-                    ("q", "quit"),
-                ];
-            }
-            // `w` only when there's a web page to open.
-            if self.web_url().is_none() {
-                keys.retain(|&(k, _)| k != "w");
+            // Each hint with how much it matters: on a narrow terminal the
+            // least are dropped first, but never `?`, which lists them all.
+            let copy = if self.show_services {
+                "copy address"
+            } else {
+                "copy IP"
+            };
+            let mut keys = match self.focus {
+                Focus::List => vec![
+                    ("↑↓", "move", 0),
+                    ("tab", "details", 7),
+                    ("⏎", copy, 6),
+                    ("c", "copy all", 5),
+                    ("w", "open", 6),
+                    ("/", "filter", 4),
+                    ("esc", "clear filter", 4),
+                    ("r", "rescan", 3),
+                    ("?", "help", 9),
+                    ("q", "quit", 1),
+                ],
+                Focus::Details => vec![
+                    ("↑↓", "move", 0),
+                    ("⏎ c", "copy line", 7),
+                    ("y", "copy IP", 5),
+                    ("w", "open", 6),
+                    ("tab", "list", 7),
+                    ("?", "help", 9),
+                    ("q", "quit", 1),
+                ],
+            };
+            // `w` only when there's a web page to open, `esc` only to clear
+            // a filter, in place of starting one.
+            let web = self.web_url().is_some();
+            let filtered = !self.filter.is_empty();
+            keys.retain(|&(k, _, _)| match k {
+                "w" => web,
+                "esc" => filtered,
+                "/" => !filtered,
+                _ => true,
+            });
+            let width = |keys: &[(&str, &str, u8)]| {
+                let words: usize = keys
+                    .iter()
+                    .map(|(k, w, _)| k.chars().count() + 1 + w.len())
+                    .sum();
+                1 + words + 2 * keys.len().saturating_sub(1)
+            };
+            while width(&keys) > usize::from(area.width) {
+                let Some(least) = (0..keys.len())
+                    .filter(|&i| keys[i].2 < 9)
+                    .min_by_key(|&i| keys[i].2)
+                else {
+                    break;
+                };
+                keys.remove(least);
             }
             let mut spans = vec![Span::raw(" ")];
-            for (k, what) in keys {
+            for (i, (k, what, _)) in keys.into_iter().enumerate() {
+                if i > 0 {
+                    spans.push(Span::raw("  "));
+                }
                 spans.push(k.bold());
-                spans.push(Span::raw(format!(" {what}  ")).dim());
+                spans.push(Span::raw(format!(" {what}")).dim());
             }
             Line::from(spans)
         };
@@ -1650,6 +1673,46 @@ mod tests {
             .unwrap();
         app.select(ssh);
         assert_eq!(app.web_url(), None);
+    }
+
+    #[test]
+    fn the_footer_fits_dropping_the_least_needed() {
+        let footer = |app: &mut App, width| {
+            let screen = drawn(app, width);
+            screen.lines().nth(39).unwrap().trim_end().to_string()
+        };
+        let mut app = App::new(crate::demo::scan(), false);
+        select_ip(&mut app, "192.168.1.14");
+        // Wide, every hint.
+        assert_eq!(
+            footer(&mut app, 124),
+            " ↑↓ move  tab details  ⏎ copy IP  c copy all  w open  / filter  r rescan  ? help  q quit"
+        );
+        // Narrower, the obvious ones go first; help stays.
+        for focus in [Focus::List, Focus::Details] {
+            app.focus = focus;
+            for show_services in [false, true] {
+                app.show(show_services);
+                app.focus = focus;
+                for width in [80, 60, 40, 20] {
+                    let line = footer(&mut app, width);
+                    assert!(line.contains("? help"), "{width}: {line}");
+                    assert!(
+                        line.chars().count() <= usize::from(width),
+                        "{width}: {line}"
+                    );
+                }
+            }
+        }
+        app.focus = Focus::List;
+        app.show(false);
+        assert_eq!(
+            footer(&mut app, 80),
+            " tab details  ⏎ copy IP  c copy all  w open  / filter  r rescan  ? help  q quit"
+        );
+        // Filtering, esc clears it in place of / starting one.
+        app.filter = "nas".into();
+        assert!(footer(&mut app, 124).contains("esc clear filter  r rescan"));
     }
 
     #[test]

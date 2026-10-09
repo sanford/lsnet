@@ -29,7 +29,7 @@ $ lsnet
 │    192.168.1.230   Espressif                 IoT device            ││                                                    │
 │  - 192.168.1.95    myq-garage                Garage door           ││                                                    │
 └────────────────────────────────────────────────────────────────────┘└────────────────────────────────────────────────────┘
- ↑↓ move  tab details  ⏎ copy IP  c copy details  / filter  r rescan  ? help  q quit
+ ↑↓ move  tab details  ⏎ copy IP  c copy all  / filter  r rescan  ? help  q quit
 ```
 
 It's meant to answer the question "what is that?" faster and more simply than [nmap](https://nmap.org). It isn't a port scanner or a security tool.
@@ -213,7 +213,7 @@ $ lsnet -s
 │                                                             ││ Title         diskstation - Synology DiskStation          │
 │                                                             ││ Server        nginx                                       │
 └─────────────────────────────────────────────────────────────┘└───────────────────────────────────────────────────────────┘
- ↑↓ move  tab details  ⏎ copy address  c copy details  w open  / filter  r rescan  ? help  q quit
+ ↑↓ move  tab details  ⏎ copy address  c copy all  w open  / filter  r rescan  ? help  q quit
 ```
 
 It lists the open ports `lsnet` found (all but AirPlay, Cast and iPhone sync, which are how devices talk to phones rather than servers) plus the web, SSH, file-sharing, VNC and similar services devices advertise over Bonjour, on whatever port they use. This machine's own services aren't listed, since `lsnet` doesn't probe it. `lsnet -s -l` prints the same list as a table (see [Text output](#text-output)), and `lsnet -s --json` gives `ip`, `port`, `service` and `host` for each.
