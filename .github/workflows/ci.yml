@@ -1,6 +1,7 @@
 name: CI
 
-# Windows only; macOS and Linux are tested by hand before each release.
+# Windows only. macOS is tested by hand before each release, and Linux by
+# the Release workflow once it's published.
 #
 # Pushes only, never pull requests: the job runs on a self-hosted runner, and
 # this repo is public, so code from forks must never reach it. (Pushes to a

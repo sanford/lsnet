@@ -1,0 +1,58 @@
+name: Release
+
+# Checks each release builds and passes its tests on Linux, x86_64 and
+# arm64, as static (musl) binaries, on GitHub's runners: nothing else in the
+# release does. Nothing is published; Linux users build lsnet or get it from
+# a package manager. Run by hand with a tag to check one again.
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to check, like v0.10.0"
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  # As in CI: the owners' runs go straight through, anyone else's wait for
+  # an owner's approval. The owners are the TRUSTED_ACTORS repository
+  # variable, a JSON list.
+  approve:
+    if: ${{ !contains(fromJSON(vars.TRUSTED_ACTORS || '[]'), github.triggering_actor) }}
+    runs-on: ubuntu-latest
+    environment: approval
+    steps:
+      - run: echo "Approved for ${{ github.triggering_actor }}"
+
+  linux:
+    needs: approve
+    if: ${{ !cancelled() && (needs.approve.result == 'success' || needs.approve.result == 'skipped') }}
+    strategy:
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            runner: ubuntu-latest
+          - target: aarch64-unknown-linux-musl
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    env:
+      TAG: ${{ github.event.release.tag_name || inputs.tag }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5
+        with:
+          ref: ${{ env.TAG }}
+      - run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - run: rustup target add ${{ matrix.target }}
+      - run: cargo test --locked --release --target ${{ matrix.target }}
+      - run: cargo build --locked --release --target ${{ matrix.target }}
+      # Static, the version it says it is, and able to show the demo network
+      # without root or a network to scan.
+      - run: |
+          bin=target/${{ matrix.target }}/release/lsnet
+          file "$bin"
+          file "$bin" | grep -qE 'statically linked|static-pie linked'
+          "$bin" --version | grep -qx "lsnet ${TAG#v}"
+          "$bin" --demo --list | grep -q "Apple TV 4K"
