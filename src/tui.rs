@@ -499,15 +499,13 @@ impl App {
         self.flash = Some((format!("Copied {text} to the clipboard"), Instant::now()));
     }
 
-    /// The web page for the selected service, or for a device, its first
-    /// web service by port.
+    /// The web page for the selected service, or the selected device's.
     fn web_url(&self) -> Option<String> {
         if self.show_services {
             return self.selected_service()?.url();
         }
         let device = *self.visible.get(self.table.selected()?)?;
-        let mut theirs = self.services.iter().filter(|s| s.device == device);
-        theirs.find_map(Service::url)
+        services::device_url(&self.services, &self.scan.devices, device)
     }
 
     fn open_web(&mut self) {
@@ -1649,10 +1647,9 @@ mod tests {
     #[test]
     fn w_opens_a_web_page_when_there_is_one() {
         let mut app = App::new(crate::demo::scan(), false);
-        // A device: its first web UI by port.
+        // A Synology: DSM's page, not port 80's.
         select_ip(&mut app, "192.168.1.14");
-        let nas = app.web_url().expect("the NAS has a web UI");
-        assert!(nas.starts_with("http://192.168.1.14"), "{nas}");
+        assert_eq!(app.web_url().as_deref(), Some("https://192.168.1.14:5001/"));
         assert!(drawn(&mut app, 124).contains(" w open "));
         // A phone has none, and no `w` in the footer.
         select_ip(&mut app, "192.168.1.112");

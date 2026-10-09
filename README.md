@@ -161,7 +161,7 @@ Press `?` to see every key:
 | `Tab`, `←`, `h` or `Esc` | Back from the details to the list |
 | `Enter` or `y` | Copy the selected IP address (or, for a service, its address and port) to the clipboard |
 | `c` | Copy all the details to the clipboard as plain text |
-| `w` | Open the web page in your browser: the selected service's, or the device's first web UI. Shown in the footer when there is one |
+| `w` | Open the web page in your browser: the selected service's, or the device's: a Synology, UGREEN or QNAP NAS's admin page, or else its first web UI. Shown in the footer when there is one |
 | `Enter` or `c` in the details | Copy the selected line's value: a MAC address, a hostname, a TXT record's value |
 | `PgUp` `PgDn` or `Ctrl-u` `Ctrl-d` | Scroll the details by half a page |
 | `J` `K` | Scroll the details by one line |

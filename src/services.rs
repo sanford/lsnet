@@ -101,6 +101,35 @@ pub fn list(devices: &[Device]) -> Vec<Service> {
         .collect()
 }
 
+/// Where some makers' NAS keep their admin page, in order of preference,
+/// when it isn't on port 80: Synology's DSM, UGREEN's UGOS and QNAP's QTS.
+const ADMIN_PORTS: &[(&str, &[u16])] = &[
+    ("synology", &[5001, 5000]),
+    ("ugreen", &[9443, 9999]),
+    ("qnap", &[443, 8080]),
+];
+
+/// The web page to open for `devices[device]`: its maker's admin page if
+/// it's one of `ADMIN_PORTS`' and it's open, or else its first web UI by port.
+pub fn device_url(services: &[Service], devices: &[Device], device: usize) -> Option<String> {
+    let d = &devices[device];
+    let ssdp = d.ssdp.iter().flat_map(|s| [&s.manufacturer, &s.model_name]);
+    let maker = [d.vendor.map(String::from), d.model.clone()]
+        .into_iter()
+        .chain(ssdp.cloned())
+        .flatten()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase();
+    let theirs: Vec<&Service> = services.iter().filter(|s| s.device == device).collect();
+    let admin = ADMIN_PORTS
+        .iter()
+        .filter(|(name, _)| maker.contains(name))
+        .flat_map(|(_, ports)| ports.iter())
+        .find_map(|&port| theirs.iter().find(|s| s.port == port)?.url());
+    admin.or_else(|| theirs.iter().find_map(|s| s.url()))
+}
+
 /// Bonjour service types that are servers someone would want to reach.
 fn advertised_name(service: &str) -> Option<&'static str> {
     Some(match service {
@@ -205,6 +234,35 @@ mod tests {
         assert_eq!(url(22, Some("SSH")), None);
         assert_eq!(url(445, Some("SMB")), None);
         assert_eq!(url(12345, None), None);
+    }
+
+    #[test]
+    fn a_nas_opens_its_admin_page() {
+        let nas = |vendor: &'static str, ports: Vec<u16>| {
+            let mut d = Device::new(Ipv4Addr::new(192, 168, 1, 14));
+            d.vendor = Some(vendor);
+            d.open_ports = ports;
+            let devices = vec![d];
+            device_url(&list(&devices), &devices, 0)
+        };
+        assert_eq!(
+            nas("Synology", vec![80, 443, 5001]).as_deref(),
+            Some("https://192.168.1.14:5001/")
+        );
+        assert_eq!(
+            nas("Ugreen", vec![80, 9443]).as_deref(),
+            Some("https://192.168.1.14:9443/")
+        );
+        // Its admin port closed, the first web UI as for anything else.
+        assert_eq!(
+            nas("Synology", vec![22, 80]).as_deref(),
+            Some("http://192.168.1.14/")
+        );
+        assert_eq!(
+            nas("Apple", vec![80, 5001]).as_deref(),
+            Some("http://192.168.1.14/")
+        );
+        assert_eq!(nas("Synology", vec![22, 445]), None);
     }
 
     #[test]
