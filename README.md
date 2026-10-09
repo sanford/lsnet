@@ -4,11 +4,8 @@
 
 ```
 $ lsnet
- lsnet  19 devices on 192.168.1.0/24 (en0) in 2.0s
- since the last scan, 2 hours ago: 2 new, 1 moved, 1 renamed, 1 missing
- 169.254.37.12 (PTZ-CAM-1.local) gave itself an address: it got no answer from DHCP
- 192.168.0.78 (00:1d:c1:12:34:56) is outside 192.168.1.0/24: probably a static address from another network
- 192.168.1.230 is claimed by 2 devices (24:0a:c4:1d:9e:02, 24:0a:c4:88:31:5b): an address conflict
+ lsnet  1 Devices  2 Services
+ 19 devices on 192.168.1.0/24 (en0) in 2.0s · 1 address conflict · 1 self-assigned address · 1 off-subnet address
 ┌ Devices (19 · 1 missing) ──────────────────────────────────────────┐┌ Living Room ───────────────────────────────────────┐
 │    IP              NAME                      TYPE                  ││ TV / streamer · Apple TV 4K (3rd gen)              │
 │  + 169.254.37.12   PTZ-CAM-1.local           Video device          ││ Type from      Bonjour airplay model = AppleTV14,1 │
@@ -32,7 +29,7 @@ $ lsnet
 │    192.168.1.230   Espressif                 IoT device            ││                                                    │
 │  - 192.168.1.95    myq-garage                Garage door           ││                                                    │
 └────────────────────────────────────────────────────────────────────┘└────────────────────────────────────────────────────┘
- ↑↓ move  tab services  ⏎ copy IP  c copy details  / filter  r rescan  ? help  q quit
+ ↑↓ move  tab details  ⏎ copy IP  c copy details  / filter  r rescan  ? help  q quit
 ```
 
 It's meant to answer the question "what is that?" faster and more simply than [nmap](https://nmap.org). It isn't a port scanner or a security tool.
@@ -45,7 +42,7 @@ It's meant to answer the question "what is that?" faster and more simply than [n
 - **Works without root.** On Linux and Windows you even get MAC addresses and vendors without it. On macOS, some come through anyway: Windows and Samba hosts report theirs over NetBIOS, and AirPlay speakers and Linux machines put theirs in their Bonjour names.
 - **macOS, Linux and Windows.**
 - **Browse or print.** In a terminal, `lsnet` opens a browser with everything known about each device. When piped, or with `-l`, it prints a table.
-- **Find your servers.** `Tab` in the browser, or `-s`, lists every service on the network (web UIs, SSH, file shares, databases, Plex, Proxmox, Home Assistant) with the address to reach it.
+- **Find your servers.** `2` in the browser, or `-s`, lists every service on the network (web UIs, SSH, file shares, databases, Plex, Proxmox, Home Assistant) with the address to reach it.
 - **Says what changed.** It remembers each network, so the next scan points out new devices, ones that moved or were renamed, and ones that didn't answer.
 - **Scriptable.** `--json` outputs every piece of evidence behind each identification.
 
@@ -157,36 +154,36 @@ Press `?` to see every key:
 
 | Key | Action |
 |---|---|
-| `↑` `↓` or `j` `k` | Move through the list |
+| `↑` `↓` or `j` `k` | Move through the list, or through the details |
 | `g` `G` or `Home` `End` | Jump to the first or last row |
-| `Tab` | Switch between devices and services |
+| `1` `2` | Show devices or services |
+| `Tab`, `→` or `l` | Go into the details, to copy any line of them |
+| `Tab`, `←`, `h` or `Esc` | Back from the details to the list |
 | `Enter` or `y` | Copy the selected IP address (or, for a service, its address and port) to the clipboard |
 | `c` | Copy all the details to the clipboard as plain text |
+| `Enter` or `c` in the details | Copy the selected line's value: a MAC address, a hostname, a TXT record's value |
 | `PgUp` `PgDn` or `Ctrl-u` `Ctrl-d` | Scroll the details by half a page |
 | `J` `K` | Scroll the details by one line |
 | `/` | Filter by IP, name, type, model, vendor, MAC or hostname, and in the services view by port or service. `Enter` keeps the filter, `Esc` clears it |
 | `r` | Scan again, keeping your place |
 | `Esc` | Clear the filter, or quit if there isn't one |
-| `h` or `?` | Show all the keys |
+| `?` | Show all the keys |
 | `q` or `Ctrl-c` | Quit |
 
 Emacs keys work too: `Ctrl-n` `Ctrl-p` move down and up, `Ctrl-v` `Alt-v` scroll the details like `PgDn` `PgUp`, `Alt-<` `Alt->` jump to the first or last row, and `Ctrl-g` clears the filter (it never quits).
 
 Under the type and model, the details say what decided them and where the name came from, for example `Type from  Bonjour airplay model = AppleTV14,1` and `Name from  AirPlay`. If `lsnet` gets a device wrong, that line points at the rule to fix.
 
-Selecting text with the mouse picks up both panes, so use `c` to copy the details instead. It copies every line, including any scrolled out of view, without wrapping. In narrow terminals the details appear below the list instead of beside it. Copying uses `pbcopy` on macOS, `wl-copy`, `xclip` or `xsel` on Linux, and the clipboard directly on Windows. Without any of those, `lsnet` asks the terminal to do the copy, which also works over SSH in most modern terminals.
+Selecting text with the mouse picks up both panes, so use `c` to copy the details instead. It copies every line, including any scrolled out of view, without wrapping. For just one value, press `Tab` to go into the details, move to its line and press `Enter` or `c`. On a terminal narrower than 80 columns there's only room for the list, and `Tab` shows the details in its place. Copying uses `pbcopy` on macOS, `wl-copy`, `xclip` or `xsel` on Linux, and the clipboard directly on Windows. Without any of those, `lsnet` asks the terminal to do the copy, which also works over SSH in most modern terminals.
 
 ### The services view
 
-Press `Tab` in the browser, or start it with `lsnet -s`, to list services instead of devices: one row per server, sorted by address, with the device's details beside it as usual.
+Press `2` in the browser, or start it with `lsnet -s`, to list services instead of devices: one row per server, sorted by address, with the device's details beside it as usual.
 
 ```
 $ lsnet -s
- lsnet  19 devices on 192.168.1.0/24 (en0) in 2.0s
- since the last scan, 2 hours ago: 2 new, 1 moved, 1 renamed, 1 missing
- 169.254.37.12 (PTZ-CAM-1.local) gave itself an address: it got no answer from DHCP
- 192.168.0.78 (00:1d:c1:12:34:56) is outside 192.168.1.0/24: probably a static address from another network
- 192.168.1.230 is claimed by 2 devices (24:0a:c4:1d:9e:02, 24:0a:c4:88:31:5b): an address conflict
+ lsnet  1 Devices  2 Services
+ 19 devices on 192.168.1.0/24 (en0) in 2.0s · 1 address conflict · 1 self-assigned address · 1 off-subnet address
 ┌ Services (23) ──────────────────────────────────────────────┐┌ diskstation.local ────────────────────────────────────────┐
 │  ADDRESS            SERVICE        HOST                     ││ NAS · Synology DS920+                                     │
 │  192.168.1.1:53     DNS            Home Router              ││ Type from     UPnP Basic by Synology                      │
@@ -215,7 +212,7 @@ $ lsnet -s
 │                                                             ││ Title         diskstation - Synology DiskStation          │
 │                                                             ││ Server        nginx                                       │
 └─────────────────────────────────────────────────────────────┘└───────────────────────────────────────────────────────────┘
- ↑↓ move  tab devices  ⏎ copy address  c copy details  / filter  r rescan  ? help  q quit
+ ↑↓ move  tab details  ⏎ copy address  c copy details  / filter  r rescan  ? help  q quit
 ```
 
 It lists the open ports `lsnet` found (all but AirPlay, Cast and iPhone sync, which are how devices talk to phones rather than servers) plus the web, SSH, file-sharing, VNC and similar services devices advertise over Bonjour, on whatever port they use. This machine's own services aren't listed, since `lsnet` doesn't probe it. `lsnet -s -l` prints the same list as a table (see [Text output](#text-output)), and `lsnet -s --json` gives `ip`, `port`, `service` and `host` for each.

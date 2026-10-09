@@ -33,6 +33,7 @@ pub fn scan() -> Scan {
     Scan {
         summary: format!("{} devices on {link} (demo)", devices.len()),
         notes: flag_notes(&devices, link),
+        caveats: Vec::new(),
         devices,
         changes: None,
         network: Some(network),

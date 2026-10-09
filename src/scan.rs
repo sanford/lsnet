@@ -86,8 +86,7 @@ impl Context {
             self.ifc.iface.name,
             self.took.as_secs_f64()
         );
-        let mut notes = flag_notes(&devices, self.ifc.link);
-        notes.extend(self.caveats.iter().cloned());
+        let notes = flag_notes(&devices, self.ifc.link);
         // Only the network this machine is on, scanned whole, is remembered:
         // anything less would make everything else look missing.
         let network = (!self.user_net && self.ifc.on_link())
@@ -96,6 +95,7 @@ impl Context {
             devices,
             summary,
             notes,
+            caveats: self.caveats.clone(),
             changes: None,
             network,
             arp_ran: self.arp_ran,

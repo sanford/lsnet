@@ -12,7 +12,7 @@ use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
     Block, Cell, Clear, Padding, Paragraph, Row, Scrollbar, ScrollbarOrientation, ScrollbarState,
-    Table, TableState, Wrap,
+    Table, TableState,
 };
 use ratatui::{DefaultTerminal, Frame};
 use std::io::Write;
@@ -21,18 +21,22 @@ use std::process::{Command, Stdio};
 use std::sync::mpsc::TryRecvError;
 use std::time::{Duration, Instant};
 
-/// Below this width the details go under the list instead of beside it.
-const SIDE_BY_SIDE: u16 = 100;
+/// A terminal this wide shows the details beside the list; narrower, there's
+/// only room for one of them.
+const WIDE: u16 = 80;
 const LABEL: usize = 13;
 const FLASH: Duration = Duration::from_secs(2);
 
 /// Every key, for the help screen.
 const KEYS: &[(&str, &str)] = &[
-    ("↑ ↓  j k", "Move through the list"),
+    ("↑ ↓  j k", "Move through the list or the details"),
     ("g G  Home End", "First or last row"),
-    ("Tab", "Switch between devices and services"),
+    ("1 2", "Devices or services"),
+    ("Tab  → l", "Into the details"),
+    ("Tab  ← h  Esc", "Back to the list"),
     ("Enter  y", "Copy the IP address (or address:port)"),
     ("c", "Copy all the details"),
+    ("Enter  c", "In the details, copy the selected line"),
     ("PgUp PgDn", "Scroll details half a page"),
     ("Ctrl-u Ctrl-d", "Scroll details half a page"),
     ("J K", "Scroll details one line"),
@@ -42,9 +46,32 @@ const KEYS: &[(&str, &str)] = &[
     ("Esc", "Clear the filter, or quit"),
     ("r", "Scan again"),
     ("+ → ~ -", "New, moved, renamed, missing since last time"),
-    ("h  ?", "Show this help"),
+    ("?", "Show this help"),
     ("q  Ctrl-c", "Quit"),
 ];
+
+/// Which pane has the keyboard.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Focus {
+    List,
+    Details,
+}
+
+/// What a key asks of the loop that reads them.
+#[derive(PartialEq, Debug)]
+enum Action {
+    Stay,
+    Quit,
+    Rescan,
+}
+
+/// One thing in the details pane: its lines, already wrapped, and what
+/// copying it copies. Headings and gaps have nothing to copy, and the
+/// cursor passes over them.
+struct Item {
+    lines: Vec<Line<'static>>,
+    copy: Option<String>,
+}
 
 /// Browse until the user quits, returning the latest scan and whether the
 /// services view was showing.
@@ -70,6 +97,11 @@ struct App {
     filter: String,
     typing_filter: bool,
     detail_scroll: u16,
+    focus: Focus,
+    /// The item the details' cursor is on, while they have the keyboard.
+    detail_cursor: usize,
+    /// How wide the details' text was at the last draw.
+    detail_width: u16,
     /// Rows of details that fit on screen, and how many there are, from the last draw.
     detail_height: u16,
     detail_lines: u16,
@@ -95,6 +127,9 @@ impl App {
             filter: String::new(),
             typing_filter: false,
             detail_scroll: 0,
+            focus: Focus::List,
+            detail_cursor: 0,
+            detail_width: 0,
             detail_height: 0,
             detail_lines: 0,
             flash: None,
@@ -165,66 +200,179 @@ impl App {
             if key.kind != KeyEventKind::Press {
                 continue;
             }
-            let key = emacs(key);
-            if self.show_help {
-                // Any key closes the help, except that the quit keys still quit.
-                self.show_help = false;
-                if key.code == KeyCode::Char('q')
-                    || (key.code == KeyCode::Char('c')
-                        && key.modifiers.contains(KeyModifiers::CONTROL))
-                {
-                    return Ok(());
-                }
-                continue;
-            }
-            if self.typing_filter {
-                self.filter_key(key);
-                continue;
-            }
-            let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-            match key.code {
-                KeyCode::Char('c') if ctrl => return Ok(()),
-                KeyCode::Char('q') => return Ok(()),
-                KeyCode::Esc if !self.filter.is_empty() => {
-                    self.filter.clear();
-                    self.refilter(self.selected_key());
-                }
-                // Esc quits here, but C-g only ever cancels.
-                KeyCode::Esc if key.modifiers == KeyModifiers::CONTROL => {}
-                KeyCode::Esc => return Ok(()),
-                KeyCode::Down | KeyCode::Char('j') => {
-                    self.select(self.table.selected().map_or(0, |i| i + 1))
-                }
-                KeyCode::Up | KeyCode::Char('k') => {
-                    self.select(self.table.selected().map_or(0, |i| i.saturating_sub(1)))
-                }
-                KeyCode::Home | KeyCode::Char('g') => self.select(0),
-                KeyCode::End | KeyCode::Char('G') => self.select(usize::MAX),
-                KeyCode::PageDown | KeyCode::Char('d') if key.code == KeyCode::PageDown || ctrl => {
-                    self.scroll_detail(self.detail_height as i32 / 2)
-                }
-                KeyCode::PageUp | KeyCode::Char('u') if key.code == KeyCode::PageUp || ctrl => {
-                    self.scroll_detail(-(self.detail_height as i32 / 2))
-                }
-                KeyCode::Char('J') => self.scroll_detail(1),
-                KeyCode::Char('K') => self.scroll_detail(-1),
-                KeyCode::Enter | KeyCode::Char('y') => self.copy_ip(),
-                KeyCode::Char('c') if !ctrl => self.copy_details(),
-                KeyCode::Char('/') => self.typing_filter = true,
-                KeyCode::Tab | KeyCode::BackTab => {
-                    let keep = self.selected_key();
-                    self.show_services = !self.show_services;
-                    self.refilter(keep);
-                }
-                KeyCode::Char('h' | '?') => self.show_help = true,
-                KeyCode::Char('r') => {
+            match self.key(emacs(key)) {
+                Action::Stay => {}
+                Action::Quit => return Ok(()),
+                Action::Rescan => {
                     // The old scan stops listening when its feed is dropped.
                     self.feed = Some(start());
                     self.status = "scanning again".into();
                 }
-                _ => {}
             }
         }
+    }
+
+    fn key(&mut self, key: KeyEvent) -> Action {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        if self.show_help {
+            // Any key closes the help, except that the quit keys still quit.
+            self.show_help = false;
+            if key.code == KeyCode::Char('q') || (key.code == KeyCode::Char('c') && ctrl) {
+                return Action::Quit;
+            }
+            return Action::Stay;
+        }
+        if self.typing_filter {
+            self.filter_key(key);
+            return Action::Stay;
+        }
+        if self.focus == Focus::Details && self.details_key(key, ctrl) {
+            return Action::Stay;
+        }
+        match key.code {
+            KeyCode::Char('c') if ctrl => return Action::Quit,
+            KeyCode::Char('q') => return Action::Quit,
+            KeyCode::Esc if !self.filter.is_empty() => {
+                self.filter.clear();
+                self.refilter(self.selected_key());
+            }
+            // Esc quits here, but C-g only ever cancels.
+            KeyCode::Esc if key.modifiers == KeyModifiers::CONTROL => {}
+            KeyCode::Esc => return Action::Quit,
+            KeyCode::Down | KeyCode::Char('j') => {
+                self.select(self.table.selected().map_or(0, |i| i + 1))
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                self.select(self.table.selected().map_or(0, |i| i.saturating_sub(1)))
+            }
+            KeyCode::Home | KeyCode::Char('g') => self.select(0),
+            KeyCode::End | KeyCode::Char('G') => self.select(usize::MAX),
+            KeyCode::PageDown | KeyCode::Char('d') if key.code == KeyCode::PageDown || ctrl => {
+                self.scroll_detail(self.detail_height as i32 / 2)
+            }
+            KeyCode::PageUp | KeyCode::Char('u') if key.code == KeyCode::PageUp || ctrl => {
+                self.scroll_detail(-(self.detail_height as i32 / 2))
+            }
+            KeyCode::Char('J') => self.scroll_detail(1),
+            KeyCode::Char('K') => self.scroll_detail(-1),
+            KeyCode::Tab | KeyCode::BackTab | KeyCode::Right | KeyCode::Char('l')
+                if self.selected().is_some() =>
+            {
+                self.focus = Focus::Details;
+                self.detail_cursor = 0;
+                self.detail_scroll = 0;
+            }
+            KeyCode::Enter | KeyCode::Char('y') => self.copy_ip(),
+            KeyCode::Char('c') => self.copy_details(),
+            KeyCode::Char('/') => {
+                self.focus = Focus::List;
+                self.typing_filter = true;
+            }
+            KeyCode::Char('1') => self.show(false),
+            KeyCode::Char('2') => self.show(true),
+            KeyCode::Char('?') => self.show_help = true,
+            KeyCode::Char('r') => return Action::Rescan,
+            _ => {}
+        }
+        Action::Stay
+    }
+
+    /// A key while the details have the keyboard, if it's one of theirs.
+    fn details_key(&mut self, key: KeyEvent, ctrl: bool) -> bool {
+        let page = (self.detail_height / 2).max(1) as isize;
+        match key.code {
+            KeyCode::Tab
+            | KeyCode::BackTab
+            | KeyCode::Esc
+            | KeyCode::Backspace
+            | KeyCode::Left
+            | KeyCode::Char('h') => self.focus = Focus::List,
+            KeyCode::Down | KeyCode::Char('j' | 'J') => self.move_cursor(1),
+            KeyCode::Up | KeyCode::Char('k' | 'K') => self.move_cursor(-1),
+            KeyCode::Home | KeyCode::Char('g') => self.move_cursor(isize::MIN / 2),
+            KeyCode::End | KeyCode::Char('G') => self.move_cursor(isize::MAX / 2),
+            KeyCode::PageDown | KeyCode::Char('d') if key.code == KeyCode::PageDown || ctrl => {
+                self.move_lines(page)
+            }
+            KeyCode::PageUp | KeyCode::Char('u') if key.code == KeyCode::PageUp || ctrl => {
+                self.move_lines(-page)
+            }
+            KeyCode::Enter => self.copy_item(),
+            KeyCode::Char('c') if !ctrl => self.copy_item(),
+            _ => return false,
+        }
+        true
+    }
+
+    /// The devices (`false`) or the services (`true`), keeping the same
+    /// device selected.
+    fn show(&mut self, services: bool) {
+        self.focus = Focus::List;
+        if services != self.show_services {
+            let keep = self.selected_key();
+            self.show_services = services;
+            self.refilter(keep);
+        }
+    }
+
+    /// The selected device's details, as the pane last drew them.
+    fn items(&self) -> Vec<Item> {
+        self.selected()
+            .map(|d| details(d, self.detail_width))
+            .unwrap_or_default()
+    }
+
+    /// Move the details' cursor by `by` items that have something to copy.
+    fn move_cursor(&mut self, by: isize) {
+        let copyable: Vec<usize> = (self.items().iter().enumerate())
+            .filter(|(_, it)| it.copy.is_some())
+            .map(|(i, _)| i)
+            .collect();
+        let Some(&last) = copyable.last() else { return };
+        let at = copyable
+            .iter()
+            .position(|&i| i >= self.detail_cursor)
+            .unwrap_or(copyable.len() - 1);
+        let to = (at as isize)
+            .saturating_add(by)
+            .clamp(0, copyable.len() as isize - 1);
+        self.detail_cursor = copyable.get(to as usize).copied().unwrap_or(last);
+    }
+
+    /// Move the details' cursor about `by` lines, to the item there.
+    fn move_lines(&mut self, by: isize) {
+        let items = self.items();
+        let starts: Vec<usize> = items
+            .iter()
+            .scan(0, |line, it| {
+                let at = *line;
+                *line += it.lines.len();
+                Some(at)
+            })
+            .collect();
+        let Some(&from) = starts.get(self.detail_cursor) else {
+            return;
+        };
+        let target = (from as isize + by).max(0) as usize;
+        let past = starts.iter().filter(|&&s| s <= target).count().max(1) - 1;
+        self.detail_cursor = past;
+        // Onto something copyable: on, in the way it's going.
+        if items[past].copy.is_none() {
+            self.move_cursor(if by < 0 { -1 } else { 0 });
+        }
+    }
+
+    fn copy_item(&mut self) {
+        let Some(text) = self
+            .items()
+            .into_iter()
+            .nth(self.detail_cursor)
+            .and_then(|it| it.copy)
+        else {
+            return;
+        };
+        copy_to_clipboard(&text);
+        self.flash = Some((format!("Copied {text} to the clipboard"), Instant::now()));
     }
 
     fn filter_key(&mut self, key: KeyEvent) {
@@ -318,6 +466,7 @@ impl App {
         });
         if self.selected_ip() != before {
             self.detail_scroll = 0;
+            self.detail_cursor = 0;
         }
     }
 
@@ -329,6 +478,7 @@ impl App {
         if self.table.selected() != Some(i) {
             self.table.select(Some(i));
             self.detail_scroll = 0;
+            self.detail_cursor = 0;
         }
     }
 
@@ -362,27 +512,27 @@ impl App {
             self.draw_scanning(f);
             return;
         }
-        let notes: Vec<&String> = self.scan.changes.iter().chain(&self.scan.notes).collect();
         let [header, body, footer] = Layout::vertical([
-            Constraint::Length(1 + notes.len() as u16),
+            Constraint::Length(2),
             Constraint::Fill(1),
             Constraint::Length(1),
         ])
         .areas(f.area());
+        f.render_widget(Paragraph::new(vec![self.tabs(), self.summary()]), header);
 
-        let mut summary = vec![
-            " lsnet ".bold(),
-            Span::raw(" "),
-            Span::raw(self.scan.summary.clone()).dim(),
-        ];
-        if !self.status.is_empty() {
-            summary.push(Span::raw(format!(" · {}", self.status)).cyan());
+        if body.width < WIDE {
+            // Room for one: the list, or the details it went into.
+            match self.focus {
+                Focus::List => self.draw_either_list(f, body),
+                Focus::Details => self.draw_detail(f, body),
+            }
+            self.draw_footer(f, footer);
+            if self.show_help {
+                draw_help(f, body);
+            }
+            return;
         }
-        let mut head = vec![Line::from(summary)];
-        head.extend(notes.iter().map(|n| Line::from(format!(" {n}")).dim()));
-        f.render_widget(Paragraph::new(head), header);
-
-        let [list, detail] = if body.width >= SIDE_BY_SIDE {
+        let [list, detail] = {
             // As wide as the list needs, up to 60%; details get the rest.
             let (first, name, last) = self.column_widths();
             let marks = if self.show_marks() { 2 } else { 0 };
@@ -392,18 +542,98 @@ impl App {
                 Constraint::Fill(1),
             ])
             .areas(body)
-        } else {
-            Layout::vertical([Constraint::Percentage(50), Constraint::Percentage(50)]).areas(body)
         };
-        if self.show_services {
-            self.draw_services(f, list);
-        } else {
-            self.draw_list(f, list);
-        }
+        self.draw_either_list(f, list);
         self.draw_detail(f, detail);
         self.draw_footer(f, footer);
         if self.show_help {
             draw_help(f, body);
+        }
+    }
+
+    /// `lsnet` and its tabs.
+    fn tabs(&self) -> Line<'static> {
+        let mut spans = vec![" lsnet ".bold(), Span::raw(" ")];
+        let tabs = [
+            ("Devices", !self.show_services),
+            ("Services", self.show_services),
+        ];
+        for (i, (name, on)) in tabs.into_iter().enumerate() {
+            let tab = Span::raw(format!("{} {name}", i + 1));
+            spans.push(if on {
+                tab.bold().underlined()
+            } else {
+                tab.dim()
+            });
+            spans.push(Span::raw("  "));
+        }
+        Line::from(spans)
+    }
+
+    /// What was scanned, what the scan's doing, how many addresses are
+    /// wrong (the details say why), and what it couldn't see.
+    fn summary(&self) -> Line<'static> {
+        let mut parts = vec![Span::raw(self.scan.summary.clone()).dim()];
+        if !self.status.is_empty() {
+            parts.push(Span::raw(self.status.clone()).cyan());
+        }
+        let flagged = |flag: Flag| {
+            let present = self.scan.devices.iter().filter(|d| !d.missing());
+            present.filter(|d| d.flags.contains(&flag)).count()
+        };
+        let problems = [
+            (
+                Flag::AddressConflict,
+                "address conflict",
+                "address conflicts",
+            ),
+            (
+                Flag::LinkLocal,
+                "self-assigned address",
+                "self-assigned addresses",
+            ),
+            (
+                Flag::OffSubnet,
+                "off-subnet address",
+                "off-subnet addresses",
+            ),
+        ];
+        for (flag, one, many) in problems {
+            let style = match flag {
+                Flag::AddressConflict => Style::new().red(),
+                Flag::LinkLocal | Flag::OffSubnet => Style::new().yellow(),
+            };
+            match flagged(flag) {
+                0 => {}
+                1 => parts.push(Span::styled(format!("1 {one}"), style)),
+                n => parts.push(Span::styled(format!("{n} {many}"), style)),
+            }
+        }
+        parts.extend(self.scan.caveats.iter().map(|c| Span::raw(c.clone()).dim()));
+        let mut spans = vec![Span::raw(" ")];
+        for (i, part) in parts.into_iter().enumerate() {
+            if i > 0 {
+                spans.push(Span::raw(" · ").dim());
+            }
+            spans.push(part);
+        }
+        Line::from(spans)
+    }
+
+    fn draw_either_list(&mut self, f: &mut Frame, area: Rect) {
+        if self.show_services {
+            self.draw_services(f, area);
+        } else {
+            self.draw_list(f, area);
+        }
+    }
+
+    /// The list's selected row: reversed while the list has the keyboard,
+    /// and only bold while the details do.
+    fn row_highlight(&self) -> Style {
+        match self.focus {
+            Focus::List => Style::new().add_modifier(Modifier::REVERSED),
+            Focus::Details => Style::new().add_modifier(Modifier::BOLD),
         }
     }
 
@@ -509,7 +739,7 @@ impl App {
         let table = Table::new(rows, widths)
             .header(Row::new(["ADDRESS", "SERVICE", "HOST"]).bold())
             .block(Block::bordered().title(self.list_title("Services", self.services.len())))
-            .row_highlight_style(Style::new().add_modifier(Modifier::REVERSED))
+            .row_highlight_style(self.row_highlight())
             .highlight_symbol("› ");
         f.render_stateful_widget(table, area, &mut self.table);
     }
@@ -550,7 +780,7 @@ impl App {
         let table = Table::new(rows, widths)
             .header(Row::new(header).bold())
             .block(Block::bordered().title(self.list_title("Devices", self.scan.devices.len())))
-            .row_highlight_style(Style::new().add_modifier(Modifier::REVERSED))
+            .row_highlight_style(self.row_highlight())
             .highlight_symbol("› ");
         f.render_stateful_widget(table, area, &mut self.table);
     }
@@ -567,14 +797,42 @@ impl App {
             return;
         };
         let title = d.name.clone().unwrap_or_else(|| d.ip.to_string());
-        let block = Block::bordered()
+        let mut block = Block::bordered()
             .title(format!(" {title} ").bold())
             .padding(Padding::horizontal(1));
+        if self.focus == Focus::Details {
+            block = block.border_style(Style::new().cyan());
+        }
         let inner = block.inner(area);
-        let para = Paragraph::new(details(d, inner.width)).wrap(Wrap { trim: false });
-        self.detail_lines = para.line_count(inner.width) as u16;
+        let mut items = details(d, inner.width);
+        self.detail_width = inner.width;
         self.detail_height = inner.height;
-        self.scroll_detail(0);
+        let mut lines = Vec::new();
+        if self.focus == Focus::Details {
+            // The cursor on something to copy, and on screen.
+            self.move_cursor(0);
+            let start: usize = items[..self.detail_cursor.min(items.len())]
+                .iter()
+                .map(|it| it.lines.len())
+                .sum();
+            let len = items.get(self.detail_cursor).map_or(1, |it| it.lines.len());
+            let (start, end) = (start as u16, (start + len) as u16);
+            if end > self.detail_scroll + self.detail_height {
+                self.detail_scroll = end.saturating_sub(self.detail_height);
+            }
+            self.detail_scroll = self.detail_scroll.min(start);
+            if let Some(it) = items.get_mut(self.detail_cursor) {
+                for line in &mut it.lines {
+                    *line = std::mem::take(line).reversed();
+                }
+            }
+        }
+        lines.extend(items.into_iter().flat_map(|it| it.lines));
+        let para = Paragraph::new(lines);
+        self.detail_lines = para.line_count(inner.width) as u16;
+        if self.focus == Focus::List {
+            self.scroll_detail(0);
+        }
         f.render_widget(para.scroll((self.detail_scroll, 0)).block(block), area);
         if self.detail_lines > self.detail_height {
             let mut state =
@@ -600,14 +858,7 @@ impl App {
         } else {
             let mut keys = vec![
                 ("↑↓", "move"),
-                (
-                    "tab",
-                    if self.show_services {
-                        "devices"
-                    } else {
-                        "services"
-                    },
-                ),
+                ("tab", "details"),
                 (
                     "⏎",
                     if self.show_services {
@@ -624,6 +875,16 @@ impl App {
             ];
             if !self.filter.is_empty() {
                 keys.insert(5, ("esc", "clear filter"));
+            }
+            if self.focus == Focus::Details {
+                keys = vec![
+                    ("↑↓", "move"),
+                    ("⏎ c", "copy line"),
+                    ("y", "copy IP"),
+                    ("tab", "list"),
+                    ("?", "help"),
+                    ("q", "quit"),
+                ];
             }
             let mut spans = vec![Span::raw(" ")];
             for (k, what) in keys {
@@ -772,29 +1033,41 @@ fn haystack(d: &Device) -> String {
         .to_lowercase()
 }
 
-/// The details pane's lines for `d`, wrapped to `cols` with long values
+/// The details pane's items for `d`, wrapped to `cols` with long values
 /// continuing under the value column rather than the label.
-fn details(d: &Device, cols: u16) -> Vec<Line<'static>> {
+fn details(d: &Device, cols: u16) -> Vec<Item> {
     let mut out = Vec::new();
     // One value column for the whole pane, wide enough for the longest Bonjour service type.
     let services = d.mdns.iter().flat_map(|m| m.services.keys());
     let width = services.map(String::len).max().unwrap_or(0).max(LABEL);
     let room = (cols as usize).saturating_sub(width + 1);
-    let row = |out: &mut Vec<Line<'static>>, label: Span<'static>, value: &str, style: Style| {
-        for (i, part) in wrap(value, room).into_iter().enumerate() {
+    let labelled = |label: Span<'static>, value: &str, style: Style| {
+        let lines = wrap(value, room).into_iter().enumerate().map(|(i, part)| {
             let label = if i == 0 { label.clone() } else { Span::raw("") };
             let pad = " ".repeat(width + 1 - label.width().min(width));
-            out.push(Line::from(vec![
-                label,
-                Span::raw(pad),
-                Span::styled(part, style),
-            ]));
-        }
+            Line::from(vec![label, Span::raw(pad), Span::styled(part, style)])
+        });
+        lines.collect()
     };
-    let field = |out: &mut Vec<Line<'static>>, label: &'static str, value: Option<String>| {
+    let row = |out: &mut Vec<Item>, label: Span<'static>, value: &str, style: Style| {
+        out.push(Item {
+            lines: labelled(label, value, style),
+            copy: Some(value.to_string()),
+        });
+    };
+    let field = |out: &mut Vec<Item>, label: &'static str, value: Option<String>| {
         if let Some(v) = value.filter(|v| !v.is_empty()) {
             row(out, label.dim(), &v, Style::new());
         }
+    };
+    // A line of text, wrapped to the pane.
+    let text = |out: &mut Vec<Item>, text: &str, style: Style| {
+        out.push(Item {
+            lines: (wrap(text, cols as usize).into_iter())
+                .map(|part| Line::styled(part, style))
+                .collect(),
+            copy: Some(text.to_string()),
+        });
     };
     let heading = [kind_label(d), d.model.clone()]
         .into_iter()
@@ -802,31 +1075,30 @@ fn details(d: &Device, cols: u16) -> Vec<Line<'static>> {
         .collect::<Vec<_>>()
         .join(" · ");
     if !heading.is_empty() {
-        out.push(Line::from(heading).italic());
+        text(&mut out, &heading, Style::new().italic());
     }
     for flag in &d.flags {
         let style = match flag {
             Flag::AddressConflict => Style::new().red(),
             Flag::LinkLocal | Flag::OffSubnet => Style::new().yellow(),
         };
-        for part in wrap(flag_explanation(*flag), cols as usize) {
-            out.push(Line::styled(part, style));
-        }
+        text(&mut out, flag_explanation(*flag), style);
     }
     for change in &d.changes {
-        let text = match change {
+        let words = match change {
             Change::New => "New: not seen on this network before".to_string(),
             Change::Moved { from } => format!("Moved from {from}"),
             Change::Renamed { from } => format!("Renamed from {from}"),
             Change::Missing => "Didn't answer this time".to_string(),
         };
-        out.push(Line::styled(text, Style::new().yellow()));
+        text(&mut out, &words, Style::new().yellow());
     }
     if d.heard_later {
-        out.push(Line::styled(
+        text(
+            &mut out,
             "Heard after the scan, while listening",
             Style::new().cyan(),
-        ));
+        );
     }
     for (label, from) in [("Type from", &d.type_from), ("Name from", &d.name_from)] {
         if let Some(from) = from {
@@ -834,7 +1106,7 @@ fn details(d: &Device, cols: u16) -> Vec<Line<'static>> {
         }
     }
     if !out.is_empty() {
-        out.push(Line::default());
+        gap(&mut out);
     }
 
     field(&mut out, "IP", Some(d.ip.to_string()));
@@ -898,13 +1170,16 @@ fn details(d: &Device, cols: u16) -> Vec<Line<'static>> {
                 style.fg(if dim { Color::DarkGray } else { Color::Blue }),
             );
             row(&mut out, label, instance, style);
+            // A TXT record copies its value alone.
             for (k, v) in m.txt.get(svc).into_iter().flatten() {
-                row(
-                    &mut out,
-                    Span::raw(""),
-                    &format!("{k} = {v}"),
-                    Style::new().dark_gray(),
-                );
+                out.push(Item {
+                    lines: labelled(
+                        Span::raw(""),
+                        &format!("{k} = {v}"),
+                        Style::new().dark_gray(),
+                    ),
+                    copy: Some(v.clone()),
+                });
             }
         }
     }
@@ -966,19 +1241,32 @@ fn flag_explanation(flag: Flag) -> &'static str {
     }
 }
 
-fn section(out: &mut Vec<Line<'static>>, title: &'static str) {
-    out.push(Line::default());
-    out.push(Line::from(title).bold().cyan());
+fn section(out: &mut Vec<Item>, title: &'static str) {
+    gap(out);
+    out.push(Item {
+        lines: vec![Line::from(title).bold().cyan()],
+        copy: None,
+    });
+}
+
+fn gap(out: &mut Vec<Item>) {
+    out.push(Item {
+        lines: vec![Line::default()],
+        copy: None,
+    });
 }
 
 /// The details pane as plain text for the clipboard: a title, then every
 /// line unwrapped, with styling and trailing spaces dropped.
 fn details_text(d: &Device) -> String {
     let title = d.name.clone().unwrap_or_else(|| d.ip.to_string());
-    let lines = details(d, u16::MAX).into_iter().map(|line| {
-        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
-        text.trim_end().to_string()
-    });
+    let lines = details(d, u16::MAX)
+        .into_iter()
+        .flat_map(|it| it.lines)
+        .map(|line| {
+            let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+            text.trim_end().to_string()
+        });
     let mut out = std::iter::once(title)
         .chain(lines)
         .collect::<Vec<_>>()
@@ -1170,6 +1458,131 @@ mod tests {
         assert_eq!(flagged("conflict"), 1);
         assert_eq!(flagged("link-local"), 1);
         assert_eq!(flagged("off-subnet"), 1);
+    }
+
+    fn press(app: &mut App, code: KeyCode) -> Action {
+        app.key(KeyEvent::new(code, KeyModifiers::NONE))
+    }
+
+    /// `app` drawn `width` columns wide, as text.
+    fn drawn(app: &mut App, width: u16) -> String {
+        let backend = ratatui::backend::TestBackend::new(width, 40);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal.draw(|f| app.draw(f)).unwrap();
+        let buffer = terminal.backend().buffer();
+        (0..40)
+            .map(|y| {
+                (0..width)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<String>()
+                    + "\n"
+            })
+            .collect()
+    }
+
+    fn select_ip(app: &mut App, ip: &str) {
+        let row = (0..app.visible.len())
+            .find(|&r| app.row_key(r).0.to_string() == ip)
+            .unwrap();
+        app.select(row);
+    }
+
+    #[test]
+    fn one_and_two_are_tabs_for_devices_and_services() {
+        let mut app = App::new(crate::demo::scan(), false);
+        select_ip(&mut app, "192.168.1.14");
+        assert!(drawn(&mut app, 120).starts_with(" lsnet  1 Devices  2 Services "));
+        press(&mut app, KeyCode::Char('2'));
+        assert!(app.show_services);
+        assert_eq!(app.selected_ip().unwrap().to_string(), "192.168.1.14");
+        press(&mut app, KeyCode::Char('2'));
+        assert!(app.show_services, "2 stays on services");
+        press(&mut app, KeyCode::Char('1'));
+        assert!(!app.show_services);
+    }
+
+    #[test]
+    fn the_second_line_sums_up_in_one() {
+        let mut scan = crate::demo::scan();
+        scan.changes = Some("since the last scan, 2 hours ago: 2 new".into());
+        scan.caveats = vec!["tip: run with sudo".into()];
+        let mut app = App::new(scan, false);
+        let screen = drawn(&mut app, 200);
+        let second = screen.lines().nth(1).unwrap().trim_end();
+        assert_eq!(
+            second,
+            " 19 devices on 192.168.1.0/24 (demo) · 1 address conflict · \
+             1 self-assigned address · 1 off-subnet address · tip: run with sudo"
+        );
+        assert!(!screen.contains("since the last scan"));
+        assert!(screen.lines().nth(2).unwrap().starts_with('┌'));
+    }
+
+    #[test]
+    fn the_details_take_the_keyboard_to_copy_a_line() {
+        let mut app = App::new(crate::demo::scan(), false);
+        select_ip(&mut app, "192.168.1.52");
+        drawn(&mut app, 120);
+        press(&mut app, KeyCode::Right);
+        assert_eq!(app.focus, Focus::Details);
+        let copy = |app: &mut App| {
+            drawn(app, 120);
+            app.items()
+                .into_iter()
+                .nth(app.detail_cursor)
+                .and_then(|it| it.copy)
+        };
+        // From the heading, past where the type and name came from and over
+        // the gap, to the IP and MAC.
+        assert_eq!(
+            copy(&mut app).as_deref(),
+            Some("TV / streamer · Apple TV 4K (3rd gen)")
+        );
+        press(&mut app, KeyCode::Char('j'));
+        press(&mut app, KeyCode::Char('j'));
+        press(&mut app, KeyCode::Char('j'));
+        assert_eq!(copy(&mut app).as_deref(), Some("192.168.1.52"));
+        press(&mut app, KeyCode::Down);
+        assert_eq!(copy(&mut app).as_deref(), Some("f0:18:98:3c:62:8d"));
+        // A TXT record copies only its value.
+        while copy(&mut app).as_deref() != Some("Living Room") {
+            press(&mut app, KeyCode::Down);
+        }
+        press(&mut app, KeyCode::Down);
+        assert_eq!(copy(&mut app).as_deref(), Some("AppleTV14,1"));
+        // The end, and on screen.
+        press(&mut app, KeyCode::End);
+        let last = copy(&mut app);
+        press(&mut app, KeyCode::Down);
+        assert_eq!(copy(&mut app), last);
+        // j and k move the cursor, not the list.
+        assert_eq!(app.selected_ip().unwrap().to_string(), "192.168.1.52");
+        // Esc goes back rather than quitting, and Tab goes back and forth.
+        assert_eq!(press(&mut app, KeyCode::Esc), Action::Stay);
+        assert_eq!(app.focus, Focus::List);
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.focus, Focus::Details);
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.focus, Focus::List);
+        // Moving down the list, then in again: the cursor's back at the top.
+        press(&mut app, KeyCode::Char('j'));
+        press(&mut app, KeyCode::Char('l'));
+        assert_eq!(app.detail_cursor, 0);
+    }
+
+    #[test]
+    fn narrow_shows_the_list_or_the_details() {
+        let mut app = App::new(crate::demo::scan(), false);
+        select_ip(&mut app, "192.168.1.52");
+        let both = drawn(&mut app, WIDE);
+        assert!(both.contains("┐┌"), "two panes at {WIDE}:\n{both}");
+        let list = drawn(&mut app, WIDE - 1);
+        assert!(!list.contains("┐┌") && list.contains(" Devices ("));
+        press(&mut app, KeyCode::Right);
+        let details = drawn(&mut app, WIDE - 1);
+        assert!(!details.contains(" Devices (") && details.contains("f0:18:98:3c:62:8d"));
+        press(&mut app, KeyCode::Left);
+        assert!(drawn(&mut app, WIDE - 1).contains(" Devices ("));
     }
 
     #[test]

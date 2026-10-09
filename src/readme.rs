@@ -48,8 +48,8 @@ fn browser(show_services: bool, ip: &str, port: Option<u16>) -> String {
     } else {
         scan.devices.len()
     };
-    // Summary and notes, the list's borders and header, then the footer.
-    let height = 1 + scan.changes.iter().count() + scan.notes.len() + 3 + rows + 1;
+    // The tabs and the summary, the list's borders and header, then the footer.
+    let height = 2 + 3 + rows + 1;
     let ip: Ipv4Addr = ip.parse().unwrap();
     tui::screen(scan, show_services, (ip, port), 124, height as u16)
 }

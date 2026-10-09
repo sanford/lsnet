@@ -63,9 +63,9 @@ impl Memory {
     /// Mark what changed since the last scan of the network.
     pub fn mark(&self, scan: &mut Scan) {
         if let Some(w) = &self.warning
-            && !scan.notes.contains(w)
+            && !scan.caveats.contains(w)
         {
-            scan.notes.push(w.clone());
+            scan.caveats.push(w.clone());
         }
         let (Some(history), Some(id)) = (&self.history, scan.network.clone()) else {
             return;

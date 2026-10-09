@@ -309,6 +309,7 @@ fn footer(scan: &Scan) -> Vec<String> {
     let mut lines = vec![scan.summary.clone()];
     lines.extend(scan.changes.clone());
     lines.extend(scan.notes.iter().cloned());
+    lines.extend(scan.caveats.iter().cloned());
     for d in scan.devices.iter().filter(|d| d.missing()) {
         let who = match &d.name {
             Some(name) => format!("{name} ({})", d.ip),
@@ -429,9 +430,10 @@ pub struct Scan {
     devices: Vec<Device>,
     /// e.g. "27 devices on 192.168.1.0/24 (en0) in 2.1s"
     summary: String,
-    /// Caveats about what the scan couldn't see, and devices whose address
-    /// is wrong.
+    /// Devices whose address is wrong, one line each.
     notes: Vec<String>,
+    /// What the scan couldn't see or do, and how to see more.
+    caveats: Vec<String>,
     /// What changed since the last scan of this network, from its history.
     changes: Option<String>,
     /// Which network this was, when it's one to remember.
@@ -449,6 +451,7 @@ impl Scan {
             devices: Vec::new(),
             summary: String::new(),
             notes: Vec::new(),
+            caveats: Vec::new(),
             changes: None,
             network: None,
             arp_ran: false,
