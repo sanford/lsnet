@@ -22,6 +22,27 @@ impl Service {
     pub fn address(&self) -> String {
         format!("{}:{}", self.ip, self.port)
     }
+
+    /// The page a browser would open for this service, if it's a web UI.
+    pub fn url(&self) -> Option<String> {
+        let scheme = match self.name? {
+            "HTTPS" | "WebDAVS" | "Proxmox" => "https",
+            "HTTP" | "HTTP alt" | "WebDAV" | "Home Assistant" | "ESPHome" | "OctoPrint"
+            | "Umbrel" | "Plex" | "Jellyfin" | "Prometheus" => "http",
+            _ => return None,
+        };
+        let host = match (scheme, self.port) {
+            ("http", 80) | ("https", 443) => self.ip.to_string(),
+            _ => self.address(),
+        };
+        // Plex's own page is a server's API; its web app is under /web.
+        let path = if self.name == Some("Plex") {
+            "/web"
+        } else {
+            "/"
+        };
+        Some(format!("{scheme}://{host}{path}"))
+    }
 }
 
 #[derive(Serialize)]
@@ -149,6 +170,42 @@ pub fn port_name(port: u16) -> Option<&'static str> {
 mod tests {
     use super::*;
     use crate::mdns::MdnsInfo;
+
+    #[test]
+    fn web_uis_have_urls() {
+        let url = |port, name| {
+            let s = Service {
+                device: 0,
+                ip: Ipv4Addr::new(192, 168, 1, 14),
+                port,
+                name,
+            };
+            s.url()
+        };
+        assert_eq!(
+            url(80, Some("HTTP")).as_deref(),
+            Some("http://192.168.1.14/")
+        );
+        assert_eq!(
+            url(443, Some("HTTPS")).as_deref(),
+            Some("https://192.168.1.14/")
+        );
+        assert_eq!(
+            url(5001, Some("HTTPS")).as_deref(),
+            Some("https://192.168.1.14:5001/")
+        );
+        assert_eq!(
+            url(8006, Some("Proxmox")).as_deref(),
+            Some("https://192.168.1.14:8006/")
+        );
+        assert_eq!(
+            url(32400, Some("Plex")).as_deref(),
+            Some("http://192.168.1.14:32400/web")
+        );
+        assert_eq!(url(22, Some("SSH")), None);
+        assert_eq!(url(445, Some("SMB")), None);
+        assert_eq!(url(12345, None), None);
+    }
 
     #[test]
     fn merges_ports_and_bonjour() {

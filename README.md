@@ -42,7 +42,7 @@ It's meant to answer the question "what is that?" faster and more simply than [n
 - **Works without root.** On Linux and Windows you even get MAC addresses and vendors without it. On macOS, some come through anyway: Windows and Samba hosts report theirs over NetBIOS, and AirPlay speakers and Linux machines put theirs in their Bonjour names.
 - **macOS, Linux and Windows.**
 - **Browse or print.** In a terminal, `lsnet` opens a browser with everything known about each device. When piped, or with `-l`, it prints a table.
-- **Find your servers.** `2` in the browser, or `-s`, lists every service on the network (web UIs, SSH, file shares, databases, Plex, Proxmox, Home Assistant) with the address to reach it.
+- **Find your servers.** `2` in the browser, or `-s`, lists every service on the network (web UIs, SSH, file shares, databases, Plex, Proxmox, Home Assistant) with the address to reach it, and `w` opens a web UI in your browser.
 - **Says what changed.** It remembers each network, so the next scan points out new devices, ones that moved or were renamed, and ones that didn't answer.
 - **Scriptable.** `--json` outputs every piece of evidence behind each identification.
 
@@ -161,6 +161,7 @@ Press `?` to see every key:
 | `Tab`, `←`, `h` or `Esc` | Back from the details to the list |
 | `Enter` or `y` | Copy the selected IP address (or, for a service, its address and port) to the clipboard |
 | `c` | Copy all the details to the clipboard as plain text |
+| `w` | Open the web page in your browser: the selected service's, or the device's first web UI. Shown in the footer when there is one |
 | `Enter` or `c` in the details | Copy the selected line's value: a MAC address, a hostname, a TXT record's value |
 | `PgUp` `PgDn` or `Ctrl-u` `Ctrl-d` | Scroll the details by half a page |
 | `J` `K` | Scroll the details by one line |
@@ -178,7 +179,7 @@ Selecting text with the mouse picks up both panes, so use `c` to copy the detail
 
 ### The services view
 
-Press `2` in the browser, or start it with `lsnet -s`, to list services instead of devices: one row per server, sorted by address, with the device's details beside it as usual.
+Press `2` in the browser, or start it with `lsnet -s`, to list services instead of devices: one row per server, sorted by address, with the device's details beside it as usual. On a web UI (HTTP, HTTPS, Proxmox, Plex, Home Assistant and the like), `w` opens it in your browser.
 
 ```
 $ lsnet -s
@@ -212,7 +213,7 @@ $ lsnet -s
 │                                                             ││ Title         diskstation - Synology DiskStation          │
 │                                                             ││ Server        nginx                                       │
 └─────────────────────────────────────────────────────────────┘└───────────────────────────────────────────────────────────┘
- ↑↓ move  tab details  ⏎ copy address  c copy details  / filter  r rescan  ? help  q quit
+ ↑↓ move  tab details  ⏎ copy address  c copy details  w open  / filter  r rescan  ? help  q quit
 ```
 
 It lists the open ports `lsnet` found (all but AirPlay, Cast and iPhone sync, which are how devices talk to phones rather than servers) plus the web, SSH, file-sharing, VNC and similar services devices advertise over Bonjour, on whatever port they use. This machine's own services aren't listed, since `lsnet` doesn't probe it. `lsnet -s -l` prints the same list as a table (see [Text output](#text-output)), and `lsnet -s --json` gives `ip`, `port`, `service` and `host` for each.

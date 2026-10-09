@@ -35,6 +35,7 @@ const KEYS: &[(&str, &str)] = &[
     ("Tab  → l", "Into the details"),
     ("Tab  ← h  Esc", "Back to the list"),
     ("Enter  y", "Copy the IP address (or address:port)"),
+    ("w", "Open its web page in the browser"),
     ("c", "Copy all the details"),
     ("Enter  c", "In the details, copy the selected line"),
     ("PgUp PgDn", "Scroll details half a page"),
@@ -263,6 +264,7 @@ impl App {
                 self.detail_scroll = 0;
             }
             KeyCode::Enter | KeyCode::Char('y') => self.copy_ip(),
+            KeyCode::Char('w') => self.open_web(),
             KeyCode::Char('c') => self.copy_details(),
             KeyCode::Char('/') => {
                 self.focus = Focus::List;
@@ -495,6 +497,26 @@ impl App {
         };
         copy_to_clipboard(&text);
         self.flash = Some((format!("Copied {text} to the clipboard"), Instant::now()));
+    }
+
+    /// The web page for the selected service, or for a device, its first
+    /// web service by port.
+    fn web_url(&self) -> Option<String> {
+        if self.show_services {
+            return self.selected_service()?.url();
+        }
+        let device = *self.visible.get(self.table.selected()?)?;
+        let mut theirs = self.services.iter().filter(|s| s.device == device);
+        theirs.find_map(Service::url)
+    }
+
+    fn open_web(&mut self) {
+        let Some(url) = self.web_url() else { return };
+        let message = match open_in_browser(&url) {
+            Ok(()) => format!("Opening {url} in your browser"),
+            Err(e) => format!("Couldn't open {url}: {e}"),
+        };
+        self.flash = Some((message, Instant::now()));
     }
 
     fn copy_details(&mut self) {
@@ -873,23 +895,29 @@ impl App {
                     },
                 ),
                 ("c", "copy details"),
+                ("w", "open"),
                 ("/", "filter"),
                 ("r", "rescan"),
                 ("?", "help"),
                 ("q", "quit"),
             ];
             if !self.filter.is_empty() {
-                keys.insert(5, ("esc", "clear filter"));
+                keys.insert(6, ("esc", "clear filter"));
             }
             if self.focus == Focus::Details {
                 keys = vec![
                     ("↑↓", "move"),
                     ("⏎ c", "copy line"),
                     ("y", "copy IP"),
+                    ("w", "open"),
                     ("tab", "list"),
                     ("?", "help"),
                     ("q", "quit"),
                 ];
+            }
+            // `w` only when there's a web page to open.
+            if self.web_url().is_none() {
+                keys.retain(|&(k, _)| k != "w");
             }
             let mut spans = vec![Span::raw(" ")];
             for (k, what) in keys {
@@ -1354,6 +1382,26 @@ fn copy_to_clipboard(text: &str) {
     let _ = out.flush();
 }
 
+/// Open `url` with the system's default browser. On Windows this avoids
+/// `cmd /c start`, which would treat an `&` as the start of a new command.
+fn open_in_browser(url: &str) -> std::io::Result<()> {
+    let mut cmd = if cfg!(target_os = "macos") {
+        Command::new("open")
+    } else if cfg!(windows) {
+        let mut c = Command::new("rundll32.exe");
+        c.arg("url.dll,FileProtocolHandler");
+        c
+    } else {
+        Command::new("xdg-open")
+    };
+    cmd.arg(url)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map(drop)
+}
+
 fn base64(data: &[u8]) -> String {
     const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::new();
@@ -1573,6 +1621,35 @@ mod tests {
         press(&mut app, KeyCode::Char('j'));
         press(&mut app, KeyCode::Char('l'));
         assert_eq!(app.detail_cursor, 0);
+    }
+
+    #[test]
+    fn w_opens_a_web_page_when_there_is_one() {
+        let mut app = App::new(crate::demo::scan(), false);
+        // A device: its first web UI by port.
+        select_ip(&mut app, "192.168.1.14");
+        let nas = app.web_url().expect("the NAS has a web UI");
+        assert!(nas.starts_with("http://192.168.1.14"), "{nas}");
+        assert!(drawn(&mut app, 124).contains(" w open "));
+        // A phone has none, and no `w` in the footer.
+        select_ip(&mut app, "192.168.1.112");
+        assert_eq!(app.web_url(), None);
+        assert!(!drawn(&mut app, 124).contains(" w open "));
+        // A service: its own page, or none for SSH.
+        press(&mut app, KeyCode::Char('2'));
+        let plex = (0..app.visible.len())
+            .find(|&r| app.row_key(r) == ("192.168.1.14".parse().unwrap(), Some(32400)))
+            .unwrap();
+        app.select(plex);
+        assert_eq!(
+            app.web_url().as_deref(),
+            Some("http://192.168.1.14:32400/web")
+        );
+        let ssh = (0..app.visible.len())
+            .find(|&r| app.row_key(r).1 == Some(22))
+            .unwrap();
+        app.select(ssh);
+        assert_eq!(app.web_url(), None);
     }
 
     #[test]
