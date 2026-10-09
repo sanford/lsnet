@@ -26,6 +26,10 @@ serde_json = "1.0.151"
 simple-dns = "0.12.0"
 socket2 = { version = "0.6.5", features = ["all"] }
 tokio = { version = "1.53.1", features = ["rt-multi-thread", "net", "time", "macros", "io-util", "sync"] }
+toml = "1.1.6"
+# The bundled themes' palettes. Pinned: new and single-maintainer, so updates
+# get read before they land.
+omarchy-themes = "=0.1.0"
 
 # Raw ARP needs packet capture: BPF on macOS, packet sockets on Linux. Windows
 # gets the same from its IP Helper API, so it needs neither these nor Npcap.

@@ -1,5 +1,6 @@
 mod arp;
 mod classify;
+mod config;
 mod demo;
 mod history;
 mod http;
@@ -8,7 +9,9 @@ mod kasa;
 mod live;
 mod mdns;
 mod netbios;
+mod omarchy;
 mod oui;
+mod palettes;
 mod ping;
 mod platform;
 mod probe;
@@ -17,6 +20,7 @@ mod readme;
 mod scan;
 mod services;
 mod ssdp;
+mod theme;
 mod tui;
 
 use clap::Parser;
@@ -86,6 +90,11 @@ struct Args {
     /// Leave the mouse to the terminal, so its own text selection works
     #[arg(long)]
     no_mouse: bool,
+
+    /// Color theme for the browser: terminal (its own colors, the default)
+    /// or a theme's name. On Omarchy, the desktop's theme is used
+    #[arg(long, value_name = "NAME")]
+    theme: Option<theme::Choice>,
 
     /// Show what lsnet remembers about the networks it has scanned, and
     /// delete it
@@ -240,11 +249,19 @@ fn run(args: Args) -> Result<(), String> {
     let args = Arc::new(args);
     // After browsing, the table is still printed so the results stay in the scrollback.
     let (scan, show_services) = if interactive {
-        tui::run(
-            || live::start(args.clone(), memory.clone(), true),
-            args.services,
-            !args.no_mouse,
-        )?
+        let config = config::load();
+        // On Omarchy the desktop's theme wins, and is followed as it changes.
+        let omarchy = omarchy::palette();
+        let settings = tui::Settings {
+            show_services: args.services,
+            mouse: !args.no_mouse && config.mouse.unwrap_or(true),
+            choice: args
+                .theme
+                .or(config.theme)
+                .unwrap_or(theme::Choice::Terminal),
+            omarchy,
+        };
+        tui::run(|| live::start(args.clone(), memory.clone(), true), settings)?
     } else if std::io::stderr().is_terminal() {
         let dim = |s: String| {
             s.if_supports_color(Stderr, |t| t.dimmed().to_string())

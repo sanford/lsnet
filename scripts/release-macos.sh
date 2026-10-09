@@ -58,6 +58,8 @@ dist=target/dist
 rm -rf "$dist"
 mkdir -p "$dist/lsnet"
 cp target/release/lsnet README.md LICENSE "$dist/lsnet/"
+# The bundled themes' MIT license asks for its notice to go with every copy.
+cp themes/LICENSE "$dist/lsnet/LICENSE-themes"
 bin=$dist/lsnet/lsnet
 
 echo "Signing with $identity"

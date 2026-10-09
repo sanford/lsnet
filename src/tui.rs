@@ -4,7 +4,10 @@
 use crate::arp::Flag;
 use crate::history::{self, Change};
 use crate::live::{Feed, Update};
+use crate::omarchy::Follow;
+use crate::palettes;
 use crate::services::{self, Service, port_name};
+use crate::theme::{Choice, Theme};
 use crate::{Device, NOISY_SERVICES, PING, Scan, change_words, ip_alarm, kind_label};
 use ratatui::crossterm::event::{
     self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent,
@@ -14,8 +17,8 @@ use ratatui::layout::{Constraint, Layout, Position, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
-    Block, Cell, Clear, Padding, Paragraph, Row, Scrollbar, ScrollbarOrientation, ScrollbarState,
-    Table, TableState,
+    Block, Cell, Clear, List, ListItem, ListState, Padding, Paragraph, Row, Scrollbar,
+    ScrollbarOrientation, ScrollbarState, Table, TableState,
 };
 use ratatui::{DefaultTerminal, Frame};
 use std::io::Write;
@@ -50,6 +53,7 @@ const KEYS: &[(&str, &str)] = &[
     ("Esc", "Clear the filter, or quit"),
     ("r", "Scan again"),
     ("+ → ~ -", "New, moved, renamed, missing since last time"),
+    ("t", "Pick a color theme"),
     ("?", "Show this help"),
     ("q  Ctrl-c", "Quit"),
 ];
@@ -77,25 +81,52 @@ struct Item {
     copy: Option<String>,
 }
 
+/// How the browser starts.
+pub struct Settings {
+    pub show_services: bool,
+    /// Clicks and the wheel come to lsnet rather than the terminal.
+    pub mouse: bool,
+    /// The theme asked for, by flag or config.
+    pub choice: Choice,
+    /// Omarchy's palette, when running there: its theme wins, and is
+    /// followed as it changes.
+    pub omarchy: Option<omarchy_theme::Palette>,
+}
+
 /// Browse until the user quits, returning the latest scan and whether the
-/// services view was showing. With `mouse`, clicks and the wheel come to
-/// lsnet rather than the terminal.
-pub fn run(
-    start: impl Fn() -> Feed,
-    show_services: bool,
-    mouse: bool,
-) -> Result<(Scan, bool), String> {
+/// services view was showing.
+pub fn run(start: impl Fn() -> Feed, settings: Settings) -> Result<(Scan, bool), String> {
     let mut terminal = ratatui::init();
-    set_mouse(mouse, true);
-    let mut app = App::new(Scan::empty(), show_services);
+    set_mouse(settings.mouse, true);
+    let mut app = App::new(Scan::empty(), settings.show_services);
+    app.choice = settings.choice;
+    app.theme = match &settings.omarchy {
+        Some(palette) => Theme::terminal(Some(palette)),
+        None => Theme::chosen(settings.choice),
+    };
+    if settings.omarchy.is_some() {
+        app.omarchy = true;
+        app.follow = Follow::start();
+    }
+    if let Some(e) = palettes::errors().first() {
+        app.flash = Some((format!("Skipped a theme: {e}"), Instant::now()));
+    }
     app.feed = Some(start());
     app.has_results = false;
     let result = app
         .run(&mut terminal, &start)
         .map(|()| (app.scan, app.show_services));
-    set_mouse(mouse, false);
+    set_mouse(settings.mouse, false);
     ratatui::restore();
     result
+}
+
+/// The theme picker, while it's open: every choice, which is selected and
+/// shown, and the one from before, for Esc to go back to.
+struct Themes {
+    choices: Vec<Choice>,
+    list: ListState,
+    before: Choice,
 }
 
 /// Turns mouse reporting on or off, if lsnet uses the mouse.
@@ -119,6 +150,8 @@ struct Hits {
     header_y: u16,
     /// The list's rows, under its column headings.
     list: Rect,
+    /// The theme picker's rows.
+    themes: Rect,
     /// The details' text, and the line each item starts on.
     details: Rect,
     item_starts: Vec<usize>,
@@ -155,6 +188,13 @@ struct App {
     has_results: bool,
     started: Instant,
     hits: Hits,
+    theme: Theme,
+    /// The theme asked for (or being previewed in the picker).
+    choice: Choice,
+    themes: Option<Themes>,
+    /// Colors follow Omarchy's theme.
+    omarchy: bool,
+    follow: Option<Follow>,
 }
 
 impl App {
@@ -180,6 +220,11 @@ impl App {
             has_results: true,
             started: Instant::now(),
             hits: Hits::default(),
+            theme: Theme::terminal(None),
+            choice: Choice::Terminal,
+            themes: None,
+            omarchy: false,
+            follow: None,
         };
         app.refilter(None);
         app
@@ -230,7 +275,15 @@ impl App {
             {
                 self.flash = None;
             }
-            terminal.draw(|f| self.draw(f)).map_err(|e| e.to_string())?;
+            if let Some(palette) = self.follow.as_ref().and_then(Follow::changed) {
+                self.theme = Theme::terminal(Some(&palette));
+            }
+            terminal
+                .draw(|f| {
+                    self.draw(f);
+                    self.theme.paint(f.buffer_mut());
+                })
+                .map_err(|e| e.to_string())?;
             // Wake up now and then for the scan's news, the ping animation
             // and a flashed message expiring.
             if !event::poll(Duration::from_millis(120)).map_err(|e| e.to_string())? {
@@ -265,6 +318,10 @@ impl App {
         }
         if self.typing_filter {
             self.filter_key(key);
+            return Action::Stay;
+        }
+        if self.themes.is_some() {
+            self.themes_key(key);
             return Action::Stay;
         }
         if self.focus == Focus::Details && self.details_key(key, ctrl) {
@@ -313,6 +370,7 @@ impl App {
             KeyCode::Char('1') => self.show(false),
             KeyCode::Char('2') => self.show(true),
             KeyCode::Char('?') => self.show_help = true,
+            KeyCode::Char('t') => self.open_themes(),
             KeyCode::Char('r') => return Action::Rescan,
             _ => {}
         }
@@ -338,7 +396,20 @@ impl App {
         }
         self.typing_filter = false;
         let hits = &self.hits;
-        let row = |area: Rect| usize::from(at.y - area.y);
+        let row = |area: Rect| usize::from(at.y.saturating_sub(area.y));
+        if let Some(themes) = &self.themes {
+            // The wheel moves through the themes, a click shows one, and a
+            // click on the one shown keeps it. A click outside goes back.
+            let selected = themes.list.selected().unwrap_or(0);
+            let clicked = themes.list.offset() + row(hits.themes);
+            match down {
+                0 if !hits.themes.contains(at) => self.themes_key(KeyCode::Esc.into()),
+                0 if clicked == selected => self.themes_key(KeyCode::Enter.into()),
+                0 => self.preview(clicked),
+                _ => self.preview((selected as isize + down).max(0) as usize),
+            }
+            return Action::Stay;
+        }
         if hits.list.contains(at) {
             let row = self.table.offset() + row(hits.list);
             if down != 0 {
@@ -388,6 +459,71 @@ impl App {
             }
         }
         Action::Stay
+    }
+
+    /// Opens the theme picker on the theme in use.
+    fn open_themes(&mut self) {
+        if self.omarchy {
+            self.flash = Some(("Colors follow the Omarchy theme".into(), Instant::now()));
+            return;
+        }
+        let choices: Vec<Choice> = std::iter::once(Choice::Terminal)
+            .chain(palettes::names().map(Choice::Named))
+            .collect();
+        let at = choices.iter().position(|&c| c == self.choice).unwrap_or(0);
+        self.themes = Some(Themes {
+            choices,
+            list: ListState::default().with_selected(Some(at)),
+            before: self.choice,
+        });
+    }
+
+    /// Shows the theme on row `i` of the picker.
+    fn preview(&mut self, i: usize) {
+        let Some(themes) = &mut self.themes else {
+            return;
+        };
+        let i = i.min(themes.choices.len() - 1);
+        themes.list.select(Some(i));
+        let choice = themes.choices[i];
+        if choice != self.choice {
+            self.choice = choice;
+            self.theme = Theme::chosen(choice);
+        }
+    }
+
+    /// Keys in the theme picker: moving shows each theme, Enter keeps one
+    /// (saving it to the config file), and Esc goes back to what was there.
+    fn themes_key(&mut self, key: KeyEvent) {
+        let Some(themes) = &self.themes else { return };
+        let at = themes.list.selected().unwrap_or(0);
+        let page = usize::from(self.hits.themes.height.max(2) - 1);
+        match key.code {
+            KeyCode::Down | KeyCode::Char('j') => self.preview(at + 1),
+            KeyCode::Up | KeyCode::Char('k') => self.preview(at.saturating_sub(1)),
+            KeyCode::PageDown => self.preview(at + page),
+            KeyCode::PageUp => self.preview(at.saturating_sub(page)),
+            KeyCode::Home | KeyCode::Char('g') => self.preview(0),
+            KeyCode::End | KeyCode::Char('G') => self.preview(usize::MAX),
+            KeyCode::Enter => {
+                self.themes = None;
+                let name = self.choice.name();
+                let message = match crate::config::save_theme(name) {
+                    Ok(path) => format!("Theme {name}, saved in {}", path.display()),
+                    Err(e) => format!("Theme {name}, but couldn't save it: {e}"),
+                };
+                self.flash = Some((message, Instant::now()));
+            }
+            KeyCode::Esc | KeyCode::Char('q' | 't') => {
+                let before = themes.before;
+                self.themes = None;
+                if before != self.choice {
+                    self.choice = before;
+                    self.theme = Theme::chosen(before);
+                }
+            }
+            _ => {}
+        }
     }
 
     /// A key while the details have the keyboard, if it's one of theirs.
@@ -673,9 +809,7 @@ impl App {
                 Focus::Details => self.draw_detail(f, body),
             }
             self.draw_footer(f, footer);
-            if self.show_help {
-                draw_help(f, body);
-            }
+            self.draw_overlays(f, body);
             return;
         }
         let [list, detail] = {
@@ -692,9 +826,41 @@ impl App {
         self.draw_either_list(f, list);
         self.draw_detail(f, detail);
         self.draw_footer(f, footer);
+        self.draw_overlays(f, body);
+    }
+
+    /// The help, or the theme picker, over the panes.
+    fn draw_overlays(&mut self, f: &mut Frame, area: Rect) {
         if self.show_help {
-            draw_help(f, body);
+            draw_help(f, area);
         }
+        let Some(themes) = &mut self.themes else {
+            return;
+        };
+        let items: Vec<ListItem> = themes
+            .choices
+            .iter()
+            .map(|&c| ListItem::new(swatch(c, &self.theme)))
+            .collect();
+        let width = items.iter().map(ListItem::width).max().unwrap_or(0) as u16 + 6;
+        let height = items.len() as u16 + 2;
+        let popup = Rect {
+            x: area.x + area.width.saturating_sub(width) / 2,
+            y: area.y + area.height.saturating_sub(height) / 2,
+            width: width.min(area.width),
+            height: height.min(area.height),
+        };
+        f.render_widget(Clear, popup);
+        let block = Block::bordered()
+            .title(" Theme ".bold())
+            .title_bottom(Line::from(" ⏎ keep  esc back ").dim())
+            .border_style(Style::new().fg(self.theme.accent));
+        self.hits.themes = block.inner(popup);
+        let list = List::new(items)
+            .block(block)
+            .highlight_style(Style::new().add_modifier(Modifier::REVERSED))
+            .highlight_symbol("› ");
+        f.render_stateful_widget(list, popup, &mut themes.list);
     }
 
     /// `lsnet` and its tabs.
@@ -785,7 +951,7 @@ impl App {
     /// while the other pane does, as lsmd and lshn do.
     fn pane(&self, title: impl Into<Line<'static>>, focused: bool) -> Block<'static> {
         let border = if focused {
-            Style::new().cyan()
+            Style::new().fg(self.theme.accent)
         } else {
             Style::new().dim()
         };
@@ -1055,6 +1221,7 @@ impl App {
                     ("/", "filter", 4),
                     ("esc", "clear filter", 4),
                     ("r", "rescan", 3),
+                    ("t", "theme", 2),
                     ("?", "help", 9),
                     ("q", "quit", 1),
                 ],
@@ -1121,6 +1288,37 @@ impl App {
         };
         f.render_widget(Paragraph::new(line), area);
     }
+}
+
+/// A theme's name and a strip of its colors, in exact colors that painting
+/// leaves alone, and the same both ways, so the selected row's reversing
+/// leaves them too.
+fn swatch(choice: Choice, theme: &Theme) -> Line<'static> {
+    let Choice::Named(name) = choice else {
+        return Line::from(vec![
+            Span::raw(format!("{:<18}", "terminal")),
+            Span::raw("its own colors").dim(),
+        ]);
+    };
+    let p = palettes::palette(name);
+    let mut spans = vec![Span::raw(format!("{name:<18}"))];
+    for c in [
+        p.background(),
+        p.red(),
+        p.yellow(),
+        p.green(),
+        p.cyan(),
+        p.blue(),
+        p.magenta(),
+        p.foreground(),
+    ] {
+        let c = theme.rgb(c.r, c.g, c.b);
+        spans.push(Span::raw("██").fg(c).bg(c));
+    }
+    if !p.is_dark() {
+        spans.push(Span::raw("  light").dim());
+    }
+    Line::from(spans)
 }
 
 fn draw_help(f: &mut Frame, area: Rect) {
@@ -1855,7 +2053,7 @@ mod tests {
         // Wide, every hint.
         assert_eq!(
             footer(&mut app, 124),
-            " ↑↓ move  tab details  ⏎ copy IP  c copy all  w open  / filter  r rescan  ? help  q quit"
+            " ↑↓ move  tab details  ⏎ copy IP  c copy all  w open  / filter  r rescan  t theme  ? help  q quit"
         );
         // Narrower, the obvious ones go first; help stays.
         for focus in [Focus::List, Focus::Details] {
@@ -1877,7 +2075,7 @@ mod tests {
         app.show(false);
         assert_eq!(
             footer(&mut app, 80),
-            " tab details  ⏎ copy IP  c copy all  w open  / filter  r rescan  ? help  q quit"
+            " tab details  ⏎ copy IP  c copy all  w open  / filter  r rescan  t theme  ? help"
         );
         // Filtering, esc clears it in place of / starting one.
         app.filter = "nas".into();
@@ -1977,6 +2175,51 @@ mod tests {
         let (list, details) = corners(&mut app);
         assert!(list.add_modifier.contains(Modifier::DIM));
         assert_eq!(details.fg, Some(Color::Cyan));
+    }
+
+    #[test]
+    fn the_theme_picker_previews_and_goes_back() {
+        let mut app = App::new(crate::demo::scan(), false);
+        press(&mut app, KeyCode::Char('t'));
+        let screen = drawn(&mut app, 124);
+        assert!(
+            screen.contains(" Theme ") && screen.contains("tokyo-night"),
+            "{screen}"
+        );
+        assert!(screen.contains("amber") && screen.contains("hn"));
+        // Moving shows each theme, painted, with its accent on the panes.
+        press(&mut app, KeyCode::Down);
+        let first = palettes::names().next().unwrap();
+        assert_eq!(app.choice, Choice::Named(first));
+        assert_ne!(app.theme.accent, Color::Cyan);
+        // Keys go to the picker, not the list.
+        let row = app.table.selected();
+        press(&mut app, KeyCode::Down);
+        assert_eq!(app.table.selected(), row);
+        // Esc goes back to the terminal's colors.
+        press(&mut app, KeyCode::Esc);
+        assert!(app.themes.is_none());
+        assert_eq!(app.choice, Choice::Terminal);
+        assert_eq!(app.theme.accent, Color::Cyan);
+        // The wheel moves through it; a click outside goes back.
+        press(&mut app, KeyCode::Char('t'));
+        drawn(&mut app, 124);
+        let inside = app.hits.themes;
+        app.mouse(MouseEvent {
+            kind: MouseEventKind::ScrollDown,
+            column: inside.x,
+            row: inside.y,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert_eq!(app.choice, Choice::Named(first));
+        click(&mut app, 0, 0);
+        assert!(app.themes.is_none());
+        assert_eq!(app.choice, Choice::Terminal);
+        // On Omarchy, its theme wins.
+        app.omarchy = true;
+        press(&mut app, KeyCode::Char('t'));
+        assert!(app.themes.is_none());
+        assert!(app.flash.as_ref().unwrap().0.contains("Omarchy"));
     }
 
     #[test]

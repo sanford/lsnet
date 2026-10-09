@@ -1,0 +1,37 @@
+mode = "dark"
+
+# The hn theme in amber (#ffc700), an old terminal's glow, in place of
+# HN's orange: for titles, links, points, borders and what's selected; a
+# deeper one for comments' bars; and grey for what's secondary. On the
+# terminal's own background: lshn doesn't paint this one's. Not an Omarchy
+# theme: lshn's.
+
+accent = "#ffc700"
+selection = "#262626"
+muted = "#767676"
+
+background = "#1a1a1a"
+dark_background = "#141414"
+darker_background = "#0f0f0f"
+lighter_background = "#262626"
+
+foreground = "#e2e2dc"
+dark_foreground = "#767676"
+light_foreground = "#ecece6"
+bright_foreground = "#f6f6ef"
+
+red = "#e5534b"
+yellow = "#fee486"
+orange = "#ffc700"
+green = "#b38c00"
+cyan = "#ffd84a"
+blue = "#ffc700"
+magenta = "#ffc700"
+brown = "#8a6f0f"
+
+bright_red = "#ff6b61"
+bright_yellow = "#ffeeb1"
+bright_green = "#a0a0a0"
+bright_cyan = "#ffe37f"
+bright_blue = "#ffcf22"
+bright_magenta = "#ffcf22"

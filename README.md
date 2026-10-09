@@ -29,7 +29,7 @@ $ lsnet
 │    192.168.1.230   Espressif                 IoT device            ││                                                    │
 │  - 192.168.1.95    myq-garage                Garage door           ││                                                    │
 └────────────────────────────────────────────────────────────────────┘└────────────────────────────────────────────────────┘
- ↑↓ move  tab details  ⏎ copy IP  c copy all  / filter  r rescan  ? help  q quit
+ ↑↓ move  tab details  ⏎ copy IP  c copy all  / filter  r rescan  t theme  ? help  q quit
 ```
 
 It's meant to answer the question "what is that?" faster and more simply than [nmap](https://nmap.org). It isn't a port scanner or a security tool.
@@ -41,6 +41,7 @@ It's meant to answer the question "what is that?" faster and more simply than [n
 - **Identifies devices, not just addresses.** It combines what devices announce about themselves (Bonjour, UPnP, Windows and Samba NetBIOS names), their naming conventions, web UI banners, open ports (including homelab staples like Proxmox, Plex and Home Assistant) and MAC vendors into a type and a model.
 - **Works without root.** On Linux and Windows you even get MAC addresses and vendors without it. On macOS, some come through anyway: Windows and Samba hosts report theirs over NetBIOS, and AirPlay speakers and Linux machines put theirs in their Bonjour names.
 - **macOS, Linux and Windows.**
+- **Themes.** In your terminal's own colors, or any of [Omarchy](https://omarchy.org)'s themes and lshn's `hn`, `amber` and `green`, picked with `t`. On Omarchy it follows the desktop's theme.
 - **Browse or print.** In a terminal, `lsnet` opens a browser with everything known about each device, and any line of it copies with a keypress. When piped, or with `-l`, it prints a table.
 - **Find your servers.** `2` in the browser, or `-s`, lists every service on the network (web UIs, SSH, file shares, databases, Plex, Proxmox, Home Assistant) with the address to reach it.
 - **One key to its web page.** Press `w` on a router, a printer, a NAS or a Plex server and its web UI opens in your browser, at the right port and scheme: DSM on a Synology, not port 80. No more typing `https://192.168.1.14:5001` from memory. See [Opening web UIs](#opening-web-uis).
@@ -129,6 +130,7 @@ lsnet [OPTIONS]
       --demo              Show a made-up network instead of scanning (no packets are sent)
       --no-history        Don't compare with earlier scans of this network, or remember this one
       --no-mouse          Leave the mouse to the terminal, so its own text selection works
+      --theme <NAME>      Color theme for the browser: terminal (the default) or a theme's name
       --forget            Show what lsnet remembers about the networks it has scanned, and delete it
 ```
 
@@ -171,6 +173,7 @@ Press `?` to see every key:
 | `J` `K` | Scroll the details by one line |
 | `/` | Filter by IP, name, type, model, vendor, MAC or hostname, and in the services view by port or service. `Enter` keeps the filter, `Esc` clears it |
 | `r` | Scan again, keeping your place |
+| `t` | Pick a color theme (see [Themes](#themes)) |
 | `Esc` | Clear the filter, or quit if there isn't one |
 | `?` | Show all the keys |
 | `q` or `Ctrl-c` | Quit |
@@ -219,7 +222,7 @@ $ lsnet -s
 │                                                             ││ Title         diskstation - Synology DiskStation          │
 │                                                             ││ Server        nginx                                       │
 └─────────────────────────────────────────────────────────────┘└───────────────────────────────────────────────────────────┘
- ↑↓ move  tab details  ⏎ copy address  c copy all  w open  / filter  r rescan  ? help  q quit
+ ↑↓ move  tab details  ⏎ copy address  c copy all  w open  / filter  r rescan  t theme  ? help  q quit
 ```
 
 It lists the open ports `lsnet` found (all but AirPlay, Cast and iPhone sync, which are how devices talk to phones rather than servers) plus the web, SSH, file-sharing, VNC and similar services devices advertise over Bonjour, on whatever port they use. This machine's own services aren't listed, since `lsnet` doesn't probe it. `lsnet -s -l` prints the same list as a table (see [Text output](#text-output)), and `lsnet -s --json` gives `ip`, `port`, `service` and `host` for each.
@@ -232,6 +235,21 @@ Most things on a home network have a web page: the router, the printer, the NAS,
 - **In the devices view,** `w` opens the device's web UI: for a NAS from Synology, UGREEN or QNAP (known by its maker, or by the name it came with, like `DiskStation` or `UGNAS`), its maker's admin page (DSM on 5001 or 5000, UGOS on 9443 or 9999, QTS on 443 or 8080), and for anything else, its first web UI by port. On a Synology, ports 80 and 443 come last: they're Web Station's, which until it's set up only says so. Ports 5000 and 9999 are listed as services only on those NAS: elsewhere they're a Mac's AirPlay receiver, a router's UPnP or a Kasa plug.
 
 SSH, file shares, VNC and the like have no `w`: only pages a browser can show are opened. Pages are opened with `open` on macOS, `xdg-open` on Linux, and the default browser on Windows.
+
+### Themes
+
+The browser draws in your terminal's own colors, so it matches whatever palette you use. Press `t` for the others: [Omarchy](https://omarchy.org)'s themes (Tokyo Night, Catppuccin, Gruvbox, Nord, Rosé Pine and more) and lshn's `hn`, `amber` and `green`. Moving through the list shows each one; `Enter` keeps it and `Esc` goes back. A theme paints the whole screen in its palette, background and all (lshn's three keep your terminal's background), and outlines the pane with the keyboard in its accent.
+
+The theme you keep is saved in `~/.lsnet/config.toml`, and `--theme NAME` picks one for a single run:
+
+```toml
+theme = "tokyo-night"   # terminal (the default) or a theme's name
+mouse = false           # leave the mouse to the terminal
+```
+
+Themes of your own go in `~/.lsnet/themes/`, as `NAME.toml` or `NAME/colors.toml` in Omarchy's `colors.toml` format, and are listed with the others.
+
+On Omarchy, lsnet follows the desktop's theme instead, as it changes, and `t` says so.
 
 ### Text output
 
@@ -495,6 +513,8 @@ That output is also a test. Saved in [`tests/fixtures/`](tests/fixtures/) with t
 Copyright (C) 2026 Sanford Lincoln
 
 `lsnet` is free software: you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version. See [LICENSE](LICENSE).
+
+The color themes in [`themes/`](themes/) are [Omarchy](https://omarchy.org)'s, copyright (c) David Heinemeier Hansson, and used under the MIT License (see [themes/LICENSE](themes/LICENSE)), and lshn's `hn`, `amber` and `green`.
 
 ### Third-party data
 
