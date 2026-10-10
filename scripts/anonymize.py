@@ -12,6 +12,8 @@ What changes:
 - MAC addresses keep their first half, which names the maker and is what
   lsnet identifies devices by, and get a made-up second half. That includes
   MACs inside names, like AirPlay's `6C4A85D1E0F2@Living Room`.
+- Link-local IPv6 addresses (`fe80::...`) get a made-up second half too.
+  One made from a MAC is made over from that MAC's stand-in.
 - "Sam's MacBook Pro" becomes "Alex's MacBook Pro", and "Sam" becomes "Alex"
   everywhere else too, so `Sams-MacBook-Pro.local` follows.
 - Hostnames from your router lose their domain: `nas.example.com` becomes
@@ -34,6 +36,7 @@ import sys
 
 IPV4 = re.compile(r"(?<![\d.])(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})(?![\d.])")
 MAC = re.compile(r"(?i)(?<![0-9a-f:])([0-9a-f]{2}(?::[0-9a-f]{2}){5})(?![0-9a-f:])")
+IPV6_LINK_LOCAL = re.compile(r"(?i)(?<![0-9a-f:])fe80:[0-9a-f:]+(?![0-9a-f:])")
 # AirPlay names instances "<12 hex digits>@<name>".
 RAOP_MAC = re.compile(r"(?i)^([0-9a-f]{12})@")
 POSSESSIVE = re.compile(r"\b([A-Z][a-z]+)(['’])s\b")
@@ -75,6 +78,21 @@ class Anonymizer:
         new = ":".join(new[i : i + 2] for i in range(0, 12, 2))
         return new.upper() if text.isupper() else new
 
+    def ipv6(self, match):
+        text = match.group(0)
+        try:
+            raw = bytearray(ipaddress.IPv6Address(text).packed)
+        except ValueError:
+            return text
+        if raw[11:13] == b"\xff\xfe":
+            # EUI-64: the MAC's halves around ff:fe, one bit flipped.
+            mac = bytes([raw[8] ^ 2, raw[9], raw[10], raw[13], raw[14], raw[15]])
+            raw[13:16] = bytes.fromhex(self.mac_tail(mac.hex()))[3:]
+        else:
+            digest = hashlib.sha256(self.salt + bytes(raw)).digest()
+            raw[12:16] = digest[:4]
+        return str(ipaddress.IPv6Address(bytes(raw)))
+
     def raop(self, match):
         text = match.group(1)
         new = self.mac_tail(text)
@@ -106,6 +124,7 @@ class Anonymizer:
         for old, new in sorted(self.replace.items(), key=lambda kv: -len(kv[0])):
             s = replace_ignoring_case(s, old, new)
         s = RAOP_MAC.sub(self.raop, s)
+        s = IPV6_LINK_LOCAL.sub(self.ipv6, s)
         s = MAC.sub(self.mac, s)
         return IPV4.sub(self.ip, s)
 
@@ -150,6 +169,9 @@ def names(devices):
             ("ssdp", "friendly_name"),
             ("netbios", "name"),
             ("kasa", "alias"),
+            ("snmp", "name"),
+            # Some makers put a serial number in theirs.
+            ("snmp", "description"),
             ("http", "title"),
         ):
             value = (d.get(source) or {}).get(key)

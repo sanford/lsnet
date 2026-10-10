@@ -9,7 +9,7 @@ use crate::arp;
 use crate::history::NetworkId;
 use crate::iface::{self, Iface};
 use crate::mdns::{self, MdnsInfo};
-use crate::{Args, Device, Scan, finish, http, kasa, netbios, ping, probe, ssdp};
+use crate::{Args, Device, Scan, finish, http, ipv6, kasa, netbios, ping, probe, snmp, ssdp};
 use pnet_base::MacAddr;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::ErrorKind;
@@ -45,10 +45,15 @@ pub struct Context {
     pub wait: Duration,
     pub grace: Duration,
     pub no_dns: bool,
+    pub no_snmp: bool,
+    /// `--ports`: more ports to check on every device found.
+    pub ports: Vec<u16>,
     /// Whether the user named the network with `--net`.
     pub user_net: bool,
     /// Every ARP sender heard so far, from the sweep and then the listener.
     pub heard: arp::Heard,
+    /// Who answered over IPv6, to match with devices as their MACs turn up.
+    pub neighbors: ipv6::Neighbors,
     /// Whether the ARP sweep ran, so devices that answer nothing else could
     /// be found.
     pub arp_ran: bool,
@@ -181,6 +186,7 @@ fn tracked<T>(tracker: &Tracker, probe: &'static str, work: impl FnOnce() -> T) 
 pub fn run(args: &Args, report: Report, recheck: &[Ipv4Addr]) -> Result<(Scan, Context), String> {
     let start = Instant::now();
     let tracker = Tracker::new(report);
+    let extra_ports = probe::extra_ports(&args.ports)?;
     let ifc = iface::detect(args.interface.as_deref(), args.net)?;
     let targets = ifc.targets();
     // ARP and mDNS reverse lookups only reach this machine's own link.
@@ -238,63 +244,77 @@ pub fn run(args: &Args, report: Report, recheck: &[Ipv4Addr]) -> Result<(Scan, C
     // it gets its own thread while the async probes share the runtime.
     let look_up_now = !args.no_dns && small;
     let mut phase_one = vec!["ARP", "ping", "ports", "Bonjour", "UPnP", "Kasa"];
+    // IPv6's all-nodes address is this link's, wherever `--net` points.
+    let ask_neighbors = cfg!(unix) && ifc.on_link();
+    if ask_neighbors {
+        phase_one.push("IPv6");
+    }
     if look_up_now {
         phase_one.push("reverse DNS");
     }
     tracker.waiting(&phase_one);
     let phase_one_done = AtomicBool::new(false);
-    let (arp_result, pinged, mut names, (open_ports, mdns, ssdp, kasa)) = thread::scope(|s| {
-        let arp = s.spawn(|| {
-            tracked(&tracker, "ARP", || {
-                early_arp.unwrap_or_else(|| arp::sweep(&ifc, &arp_targets, wait))
-            })
-        });
-        let pinged = s.spawn(|| tracked(&tracker, "ping", || ping::sweep(&probe_targets, wait)));
-        // Reverse DNS is slow per lookup but cheap in parallel, so start it for
-        // every address now instead of waiting to learn which ones are alive.
-        let names = s.spawn(|| {
-            if !look_up_now {
-                return HashMap::new();
-            }
-            let mut ips = targets.clone();
-            ips.push(ifc.ip);
-            tracked(&tracker, "reverse DNS", || hostnames(ips, wait + grace))
-        });
-        // On a big network the port probe takes a while: show how far it is.
-        if !small {
-            s.spawn(|| {
-                while !phase_one_done.load(Ordering::Relaxed) {
-                    thread::sleep(Duration::from_millis(250));
-                    tracker.publish();
-                }
+    let (arp_result, pinged, neighbors, mut names, (open_ports, mdns, ssdp, kasa)) =
+        thread::scope(|s| {
+            let arp = s.spawn(|| {
+                tracked(&tracker, "ARP", || {
+                    early_arp.unwrap_or_else(|| arp::sweep(&ifc, &arp_targets, wait))
+                })
             });
-        }
-        let reverse = if small { &link_targets[..] } else { &[] };
-        let rest = rt.block_on(async {
-            tokio::join!(
-                finished(
-                    &tracker,
-                    "ports",
-                    probe::scan(&probe_targets, wait, &tracker.checked)
-                ),
-                finished(&tracker, "Bonjour", mdns::discover(ifc.ip, reverse, wait)),
-                finished(
-                    &tracker,
-                    "UPnP",
-                    ssdp::discover(ifc.ip, ifc.net, &ifc.own_ips, wait, grace)
-                ),
-                finished(&tracker, "Kasa", kasa::discover(ifc.ip, ifc.net, wait)),
-            )
+            let pinged =
+                s.spawn(|| tracked(&tracker, "ping", || ping::sweep(&probe_targets, wait)));
+            let neighbors = s.spawn(|| {
+                if !ask_neighbors {
+                    return ipv6::Neighbors::new();
+                }
+                tracked(&tracker, "IPv6", || ipv6::discover(&ifc.iface, wait))
+            });
+            // Reverse DNS is slow per lookup but cheap in parallel, so start it for
+            // every address now instead of waiting to learn which ones are alive.
+            let names = s.spawn(|| {
+                if !look_up_now {
+                    return HashMap::new();
+                }
+                let mut ips = targets.clone();
+                ips.push(ifc.ip);
+                tracked(&tracker, "reverse DNS", || hostnames(ips, wait + grace))
+            });
+            // On a big network the port probe takes a while: show how far it is.
+            if !small {
+                s.spawn(|| {
+                    while !phase_one_done.load(Ordering::Relaxed) {
+                        thread::sleep(Duration::from_millis(250));
+                        tracker.publish();
+                    }
+                });
+            }
+            let reverse = if small { &link_targets[..] } else { &[] };
+            let rest = rt.block_on(async {
+                tokio::join!(
+                    finished(
+                        &tracker,
+                        "ports",
+                        probe::scan(&probe_targets, &extra_ports, wait, &tracker.checked)
+                    ),
+                    finished(&tracker, "Bonjour", mdns::discover(ifc.ip, reverse, wait)),
+                    finished(
+                        &tracker,
+                        "UPnP",
+                        ssdp::discover(ifc.ip, ifc.net, &ifc.own_ips, wait, grace)
+                    ),
+                    finished(&tracker, "Kasa", kasa::discover(ifc.ip, ifc.net, wait)),
+                )
+            });
+            let out = (
+                arp.join().expect("arp thread"),
+                pinged.join().expect("ping thread"),
+                neighbors.join().expect("IPv6 thread"),
+                names.join().expect("dns thread"),
+                rest,
+            );
+            phase_one_done.store(true, Ordering::Relaxed);
+            out
         });
-        let out = (
-            arp.join().expect("arp thread"),
-            pinged.join().expect("ping thread"),
-            names.join().expect("dns thread"),
-            rest,
-        );
-        phase_one_done.store(true, Ordering::Relaxed);
-        out
-    });
     let (heard, privileged) = match arp_result {
         Ok(heard) => (heard, true),
         Err(e)
@@ -319,8 +339,11 @@ pub fn run(args: &Args, report: Report, recheck: &[Ipv4Addr]) -> Result<(Scan, C
         wait,
         grace,
         no_dns: args.no_dns,
+        no_snmp: args.no_snmp,
+        ports: extra_ports,
         user_net: args.net.is_some(),
         heard,
+        neighbors,
         took: Duration::ZERO,
         caveats: Vec::new(),
         ifc,
@@ -438,6 +461,16 @@ pub fn run(args: &Args, report: Report, recheck: &[Ipv4Addr]) -> Result<(Scan, C
             ifc.net, ifc.iface.name, ifc.link
         ));
     }
+    // With every MAC on the link known, a neighbor with another is a device
+    // nothing else found. Without them, there's no telling.
+    if privileged && !ctx.user_net && ifc.narrowed_from.is_none() {
+        let own: Vec<MacAddr> = crate::platform::adapters()
+            .iter()
+            .filter_map(|a| a.mac)
+            .collect();
+        let strangers = ipv6::strangers(&ctx.neighbors, &devices, &own);
+        caveats.extend(ipv6::strangers_note(&strangers));
+    }
     // Where the OS shares its ARP cache (Linux), unprivileged scans already
     // see MACs and quiet devices, so the tip only matters when it doesn't.
     if !privileged && !have_macs && ifc.on_link() {
@@ -451,9 +484,9 @@ pub fn run(args: &Args, report: Report, recheck: &[Ipv4Addr]) -> Result<(Scan, C
 
 /// Phase 2, for `devices`: ports for hosts found some way other than the
 /// port probe (`port_scanned`), then web banners for everything serving
-/// HTTP. Alongside, every device is asked for its NetBIOS name, and those
-/// that stayed quiet to the UPnP and Kasa broadcasts are asked directly,
-/// and each is pinged, to time it. With `look_up`, their names are looked
+/// HTTP. Alongside, every device is asked for its NetBIOS name and what
+/// SNMP says of it, and those that stayed quiet to the UPnP and Kasa
+/// broadcasts are asked directly, and each is pinged, to time it. With `look_up`, their names are looked
 /// up too. Then each is finished.
 /// Strays are outside this network, so nothing here routes to them.
 pub fn follow_up(
@@ -465,9 +498,10 @@ pub fn follow_up(
     tracker: &Tracker,
 ) {
     let (ifc, grace) = (&ctx.ifc, ctx.grace);
+    // This machine too: its ports answer at its own address like anyone's.
     let asked: Vec<(Ipv4Addr, bool)> = devices
         .iter()
-        .filter(|d| !d.this_device && !d.stray())
+        .filter(|d| !d.stray())
         .filter_map(|d| {
             let needs_ports = !port_scanned.contains(&d.ip);
             (needs_ports || d.open_ports.contains(&80)).then_some((d.ip, needs_ports))
@@ -481,6 +515,11 @@ pub fn follow_up(
             .collect()
     };
     let netbios_targets = others(|_| true);
+    let snmp_targets = if ctx.no_snmp {
+        Vec::new()
+    } else {
+        netbios_targets.clone()
+    };
     let ssdp_targets = others(|d| d.ssdp.is_none());
     let kasa_targets = others(|d| d.kasa.is_none());
     let late: Vec<Ipv4Addr> = if look_up {
@@ -492,24 +531,34 @@ pub fn follow_up(
     } else {
         Vec::new()
     };
-    let mut phase_two = vec!["ports", "web pages", "NetBIOS", "UPnP", "Kasa", "ping"];
+    let mut phase_two = vec![
+        "ports",
+        "web pages",
+        "NetBIOS",
+        "SNMP",
+        "UPnP",
+        "Kasa",
+        "ping",
+    ];
     if look_up {
         phase_two.push("reverse DNS");
     }
     tracker.checks.store(0, Ordering::Relaxed);
     tracker.waiting(&phase_two);
     let wait = ctx.wait;
-    let (followed, netbios, late_ssdp, late_kasa, late_names, pings) = thread::scope(|s| {
+    let (followed, netbios, snmp, late_ssdp, late_kasa, late_names, pings) = thread::scope(|s| {
         let late_names = s.spawn(|| tracked(tracker, "reverse DNS", || hostnames(late, wait)));
         let pings = s.spawn(|| tracked(tracker, "ping", || ping::times(&netbios_targets, grace)));
-        let (followed, netbios, ssdp, kasa) = ctx.rt.block_on(async {
+        let (followed, netbios, snmp, ssdp, kasa) = ctx.rt.block_on(async {
             let followed = async {
                 let mut set = JoinSet::new();
                 for (ip, needs_ports) in asked {
+                    let extra = ctx.ports.clone();
                     set.spawn(async move {
+                        let extra = &extra[..];
                         let (ports, web_wait) = if needs_ports {
                             (
-                                Some(probe::all_ports(ip, probe::AWAKE_WAIT).await),
+                                Some(probe::all_ports(ip, extra, probe::AWAKE_WAIT).await),
                                 grace - probe::AWAKE_WAIT,
                             )
                         } else {
@@ -541,6 +590,7 @@ pub fn follow_up(
                     "NetBIOS",
                     netbios::query(ifc.ip, &netbios_targets, grace)
                 ),
+                finished(tracker, "SNMP", snmp::query(ifc.ip, &snmp_targets, grace)),
                 finished(
                     tracker,
                     "UPnP",
@@ -555,7 +605,7 @@ pub fn follow_up(
         });
         let late_names = late_names.join().expect("dns thread");
         let pings = pings.join().expect("ping thread");
-        (followed, netbios, ssdp, kasa, late_names, pings)
+        (followed, netbios, snmp, ssdp, kasa, late_names, pings)
     });
     names.extend(late_names);
     for d in devices {
@@ -574,6 +624,9 @@ pub fn follow_up(
         if let Some(n) = netbios.get(&d.ip) {
             d.netbios = Some(n.clone());
         }
+        if let Some(s) = snmp.get(&d.ip) {
+            d.snmp = Some(s.clone());
+        }
         // Without ARP, Windows and Samba hosts report their MAC over
         // NetBIOS, and some Bonjour names carry one.
         if d.mac.is_none() {
@@ -583,6 +636,7 @@ pub fn follow_up(
                 .and_then(|n| n.mac.clone())
                 .or_else(|| d.mdns.as_ref().and_then(|m| m.mac.clone()));
         }
+        ipv6::assign(d, &ctx.neighbors);
         if let Some(name) = names.get(&d.ip) {
             d.hostname = Some(name.clone());
         }
@@ -608,7 +662,7 @@ fn second_chance(ctx: &Context, ips: &[Ipv4Addr]) -> Vec<Device> {
         let pinged = s.spawn(|| ping::sweep(ips, grace));
         let rest = ctx.rt.block_on(async {
             tokio::join!(
-                probe::scan(ips, grace, &checked),
+                probe::scan(ips, &ctx.ports, grace, &checked),
                 kasa::query(ifc.ip, ifc.net, ips, grace),
             )
         });

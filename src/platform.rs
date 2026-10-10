@@ -8,7 +8,7 @@
 
 use ipnetwork::Ipv4Network;
 use pnet_base::MacAddr;
-use std::net::Ipv4Addr;
+use std::net::{Ipv4Addr, Ipv6Addr};
 
 #[cfg(windows)]
 mod windows;
@@ -22,8 +22,8 @@ pub use windows::{
 pub struct Adapter {
     /// What the user calls it: `en0`, `wlan0`, or on Windows the friendly name (`Wi-Fi`).
     pub name: String,
-    /// Windows finds its ARP cache entries by index; elsewhere they go by name.
-    #[cfg_attr(unix, allow(dead_code))]
+    /// Windows finds its ARP cache entries by index; elsewhere they go by
+    /// name, and the index says which link an IPv6 packet is for.
     pub index: u32,
     pub mac: Option<MacAddr>,
     pub ips: Vec<Ipv4Network>,
@@ -89,7 +89,29 @@ pub fn arp_cache(adapter: &Adapter) -> Vec<(Ipv4Addr, MacAddr)> {
         .unwrap_or_default()
 }
 
+/// The kernel's IPv6 neighbor cache: ARP's counterpart, for every interface.
+#[cfg(target_os = "linux")]
+pub fn neighbor_cache() -> Vec<(Ipv6Addr, MacAddr)> {
+    run("ip", &["-6", "neigh", "show"])
+        .map(|text| parse_ip_neigh(&text))
+        .unwrap_or_default()
+}
+
 #[cfg(all(unix, not(target_os = "linux")))]
+pub fn neighbor_cache() -> Vec<(Ipv6Addr, MacAddr)> {
+    run("ndp", &["-an"])
+        .map(|text| parse_ndp_an(&text))
+        .unwrap_or_default()
+}
+
+/// Nothing asks for it on Windows, where the IPv6 ping that fills it can't
+/// be sent.
+#[cfg(windows)]
+pub fn neighbor_cache() -> Vec<(Ipv6Addr, MacAddr)> {
+    Vec::new()
+}
+
+#[cfg(unix)]
 fn run(cmd: &str, args: &[&str]) -> Option<String> {
     let out = std::process::Command::new(cmd).args(args).output().ok()?;
     Some(String::from_utf8_lossy(&out.stdout).into_owned())
@@ -158,6 +180,30 @@ pub fn parse_arp_an(text: &str, iface: &str) -> Vec<(Ipv4Addr, MacAddr)> {
         .collect()
 }
 
+/// `ip -6 neigh show`: `fe80::1 dev eth0 lladdr 1c:d6:be:3c:62:8d router STALE`.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub fn parse_ip_neigh(text: &str) -> Vec<(Ipv6Addr, MacAddr)> {
+    text.lines()
+        .filter_map(|line| {
+            let words: Vec<&str> = line.split_whitespace().collect();
+            let at = words.iter().position(|w| *w == "lladdr")?;
+            Some((words.first()?.parse().ok()?, parse_mac(words.get(at + 1)?)?))
+        })
+        .collect()
+}
+
+/// `ndp -an`: `fe80::1%en0  1c:d6:be:3c:62:8d  en0 23h59m58s S R`.
+#[cfg_attr(any(target_os = "linux", windows), allow(dead_code))]
+pub fn parse_ndp_an(text: &str) -> Vec<(Ipv6Addr, MacAddr)> {
+    text.lines()
+        .filter_map(|line| {
+            let mut words = line.split_whitespace();
+            let ip = words.next()?.split('%').next()?.parse().ok()?;
+            Some((ip, parse_mac(words.next()?)?))
+        })
+        .collect()
+}
+
 /// macOS drops leading zeros (`a4:2b:0:1:2:3`), so parse each octet individually.
 fn parse_mac(s: &str) -> Option<MacAddr> {
     let o: Vec<u8> = s
@@ -215,6 +261,40 @@ IP address       HW type     Flags       HW address            Mask     Device
                     default      192.168.1.1  UGScg  en0\n\
                     default      10.0.0.1     UGScIg en1\n";
         assert_eq!(parse_netstat(text, "en1"), Some(Ipv4Addr::new(10, 0, 0, 1)));
+    }
+
+    #[test]
+    fn ip_neigh() {
+        let text = "fe80::1 dev eth0 lladdr 1c:d6:be:3c:62:8d router STALE\n\
+                    fe80::9 dev eth0  FAILED\n\
+                    2001:db8::5 dev wlan0 lladdr aa:bb:cc:dd:ee:ff REACHABLE\n";
+        assert_eq!(
+            parse_ip_neigh(text),
+            vec![
+                (
+                    "fe80::1".parse().unwrap(),
+                    MacAddr::new(0x1c, 0xd6, 0xbe, 0x3c, 0x62, 0x8d)
+                ),
+                (
+                    "2001:db8::5".parse().unwrap(),
+                    MacAddr::new(0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff)
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn ndp_an() {
+        let text = "Neighbor                    Linklayer Address  Netif Expire    St Flgs Prbs\n\
+                    fe80::211:32ff:feea:a9c3%en0 0:11:32:ea:a9:c3    en0 23h0m19s  S\n\
+                    fe80::9%en0                 (incomplete)         en0 expired   N\n";
+        assert_eq!(
+            parse_ndp_an(text),
+            vec![(
+                "fe80::211:32ff:feea:a9c3".parse().unwrap(),
+                MacAddr::new(0x00, 0x11, 0x32, 0xea, 0xa9, 0xc3)
+            )]
+        );
     }
 
     #[test]

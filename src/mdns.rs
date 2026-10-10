@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use simple_dns::rdata::RData;
 use simple_dns::{CLASS, Name, Packet, QCLASS, Question, TYPE};
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::net::Ipv4Addr;
+use std::net::{Ipv4Addr, Ipv6Addr};
 use std::time::Duration;
 use tokio::net::UdpSocket;
 use tokio::time::{Instant, timeout_at};
@@ -109,6 +109,9 @@ pub struct MdnsInfo {
     /// A MAC address one of its service names gave away (see `instance_mac`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mac: Option<String>,
+    /// The link-local IPv6 addresses its host name comes with.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub ipv6: Vec<Ipv6Addr>,
     /// Whether a reply came from this address itself, which shows the device
     /// is on this network segment and using it. Other addresses are only
     /// what someone said: a device listing all of its addresses, a Bonjour
@@ -128,6 +131,8 @@ struct Records {
     /// host → its addresses, in the order announced. Multi-homed devices
     /// (a Dante interface's secondary port, say) list more than one.
     a: HashMap<String, Vec<Ipv4Addr>>,
+    /// host → its link-local IPv6 addresses.
+    aaaa: HashMap<String, Vec<Ipv6Addr>>,
     types: HashSet<String>,
     /// Every address a reply came from.
     senders: HashSet<Ipv4Addr>,
@@ -245,6 +250,14 @@ fn absorb(rec: &mut Records, packet: &Packet, src: Ipv4Addr) {
                 let addrs = rec.a.entry(key).or_default();
                 let ip = Ipv4Addr::from(a.address);
                 if !addrs.contains(&ip) {
+                    addrs.push(ip);
+                }
+            }
+            RData::AAAA(aaaa) => {
+                let ip = Ipv6Addr::from(aaaa.address);
+                let addrs = rec.aaaa.entry(key).or_default();
+                // The others are for the internet, not this network.
+                if ip.segments()[0] & 0xffc0 == 0xfe80 && !addrs.contains(&ip) {
                     addrs.push(ip);
                 }
             }
@@ -435,6 +448,13 @@ fn resolve(rec: Records) -> HashMap<Ipv4Addr, MdnsInfo> {
     for (ip, name) in rec.reverse {
         out.entry(ip).or_default().hostname = Some(name);
     }
+    for (host, addrs) in &rec.aaaa {
+        for ip in rec.a.get(host).into_iter().flatten() {
+            if let Some(info) = out.get_mut(ip) {
+                info.ipv6 = addrs.clone();
+            }
+        }
+    }
     for (ip, info) in &mut out {
         info.heard_from = rec.senders.contains(ip);
     }
@@ -463,6 +483,7 @@ pub fn merge(info: &mut Option<MdnsInfo>, more: MdnsInfo) -> bool {
         info.ports.len(),
         info.hostname.is_some(),
         info.mac.is_some(),
+        info.ipv6.len(),
     );
     for (svc, instance) in more.services {
         info.services.entry(svc).or_insert(instance);
@@ -482,6 +503,11 @@ pub fn merge(info: &mut Option<MdnsInfo>, more: MdnsInfo) -> bool {
     if info.mac.is_none() {
         info.mac = more.mac;
     }
+    for ip in more.ipv6 {
+        if !info.ipv6.contains(&ip) {
+            info.ipv6.push(ip);
+        }
+    }
     info.heard_from |= more.heard_from;
     let after = (
         info.services.len(),
@@ -489,6 +515,7 @@ pub fn merge(info: &mut Option<MdnsInfo>, more: MdnsInfo) -> bool {
         info.ports.len(),
         info.hostname.is_some(),
         info.mac.is_some(),
+        info.ipv6.len(),
     );
     before != after
 }

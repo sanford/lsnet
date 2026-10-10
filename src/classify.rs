@@ -39,6 +39,7 @@ const RULES: &[fn(&Device) -> Option<Why>] = &[
     from_mdns,
     from_kasa,
     from_ssdp,
+    from_snmp,
     from_names,
     from_http,
     from_services,
@@ -55,6 +56,8 @@ fn identify_why(d: &Device) -> Option<Why> {
 /// What a device says about its own model, one protocol at a time. These
 /// are the rules that can disagree: the ones after them are guesses, made
 /// to be overruled (a NAS running Plex is still a NAS).
+/// Not SNMP, though: its "Network gear" takes in the routers and access
+/// points the others name more exactly.
 const SELF_DESCRIPTIONS: &[fn(&Device) -> Option<Why>] = &[from_mdns, from_kasa, from_ssdp];
 
 /// The other types a device's own descriptions give it, when they don't
@@ -217,6 +220,83 @@ fn from_ssdp(d: &Device) -> Option<Why> {
         (None, m) => format!("UPnP device by {m}"),
     };
     Some(((kind, model), why))
+}
+
+/// What SNMP's makers mostly make. HP makes printers, switches and servers,
+/// and Dell and Samsung as many kinds, so theirs go by description alone.
+const SNMP_MAKERS: &[(&str, &[&str])] = &[
+    (
+        "Printer",
+        &[
+            "Brother",
+            "Canon",
+            "Epson",
+            "Konica Minolta",
+            "Kyocera",
+            "Lexmark",
+            "Ricoh",
+            "Sharp",
+            "Xerox",
+        ],
+    ),
+    ("UPS / PDU", &["APC", "CyberPower", "Eaton"]),
+    ("NAS", &["Synology", "QNAP"]),
+    (
+        "Network gear",
+        &[
+            "Arista", "Aruba", "Cisco", "D-Link", "Fortinet", "HPE", "Juniper", "MikroTik",
+            "Netgear", "TP-Link", "Ubiquiti",
+        ],
+    ),
+];
+
+/// Words in an SNMP description that say what a device is, whoever made it.
+const SNMP_WORDS: &[(&str, &[&str])] = &[
+    (
+        "Printer",
+        &[
+            "jetdirect",
+            "laserjet",
+            "officejet",
+            "deskjet",
+            "pagewide",
+            "designjet",
+            "printer",
+            "print server",
+        ],
+    ),
+    (
+        "NAS",
+        &["synology", "diskstation", "qnap", "truenas", "readynas"],
+    ),
+    (
+        "Network gear",
+        &["procurve", "routeros", "edgeos", "switch", "access point"],
+    ),
+];
+
+/// Only what SNMP is sure of. A description like "Linux nas 5.10" names the
+/// kernel under a NAS, a router or a PC alike, so it's shown and not judged.
+fn from_snmp(d: &Device) -> Option<Why> {
+    let s = d.snmp.as_ref()?;
+    let description = s.description.as_deref().unwrap_or("");
+    let lower = description.to_ascii_lowercase();
+    let maker = s.maker();
+    let by_word = SNMP_WORDS
+        .iter()
+        .find(|(_, words)| words.iter().any(|w| lower.contains(w)));
+    let by_maker = SNMP_MAKERS
+        .iter()
+        .find(|(_, makers)| maker.is_some_and(|m| makers.contains(&m)));
+    let kind = by_word.or(by_maker)?.0;
+    // A printer's first device is itself. Elsewhere it's a CPU or a disk.
+    let device = s.device.clone().filter(|_| kind == "Printer");
+    let why = match (&device, by_word, maker) {
+        (Some(model), _, _) => format!("SNMP reports model {model}"),
+        (None, Some(_), _) => format!("SNMP description \"{description}\""),
+        (None, None, maker) => format!("SNMP object ID is {}'s", maker.unwrap_or("its maker")),
+    };
+    Some(((kind, device.or(maker.map(String::from))), why))
 }
 
 /// Every name a device goes by, lowercased.
@@ -625,7 +705,8 @@ fn from_vendor(d: &Device) -> Option<Why> {
 /// first. Next is the device's primary `.local` name, kept whole so it can be
 /// pasted into a browser or ssh, which beats generic service labels like Home
 /// Assistant's "Home" or a file share's name. A Windows or Samba computer
-/// name comes after UPnP's. Router DNS names are shortened to the host.
+/// name comes after UPnP's, then SNMP's. Router DNS names are shortened to
+/// the host.
 fn name_and_source(d: &Device) -> Option<(String, String)> {
     let m = d.mdns.as_ref();
     let service = |services: &[&str]| -> Option<(String, String)> {
@@ -680,6 +761,10 @@ fn name_and_source(d: &Device) -> Option<(String, String)> {
             .as_ref()
             .map(|n| n.name.clone())
             .map(from("NetBIOS")),
+        d.snmp
+            .as_ref()
+            .and_then(|s| s.name.clone())
+            .map(from("SNMP")),
         m.and_then(|m| m.hostname.clone()).map(from("mDNS")),
         dns.map(from("reverse DNS")),
     ]
@@ -695,7 +780,10 @@ fn name_and_source(d: &Device) -> Option<(String, String)> {
 /// (AirPlay's "Living Room") aren't hostnames, and always differ.
 fn names_differ(d: &Device) -> Vec<String> {
     let said: Vec<(&str, &str)> = [
-        (d.mdns.as_ref().and_then(|m| m.hostname.as_deref()), "Bonjour"),
+        (
+            d.mdns.as_ref().and_then(|m| m.hostname.as_deref()),
+            "Bonjour",
+        ),
         (d.netbios.as_ref().map(|n| n.name.as_str()), "NetBIOS"),
         (d.hostname.as_deref(), "reverse DNS"),
     ]
@@ -747,8 +835,10 @@ fn is_junk_name(n: &str) -> bool {
     let hex = |s: &str| s.len() >= 8 && s.chars().all(|c| c.is_ascii_hexdigit() || c == '-');
     n.is_empty()
         || hex(n)
-        // Brother printers default to "BRW" + MAC address.
-        || n.len() == 15 && n.to_ascii_lowercase().starts_with("brw") && hex(&n[3..])
+        // Brother printers default to "BRW" + MAC address, or "BRN" when wired.
+        || n.len() == 15
+            && n.get(..3).is_some_and(|p| ["brw", "brn"].contains(&p.to_ascii_lowercase().as_str()))
+            && hex(&n[3..])
         || ["localhost", "none", "wlan0", "eth0", "espressif", "unknown"].contains(&n.to_ascii_lowercase().as_str())
 }
 
@@ -1113,6 +1203,100 @@ mod tests {
         assert_eq!(name(&d).as_deref(), Some("DESKTOP-4F2K9QX"));
     }
 
+    fn snmp(description: &str, object_id: &str, device: Option<&str>) -> Device {
+        let mut d = device_at_rest();
+        d.snmp = Some(crate::snmp::SnmpInfo {
+            name: Some("BRN3C2AF4A1B2C3".into()),
+            description: Some(description.into()),
+            object_id: Some(object_id.into()),
+            device: device.map(String::from),
+        });
+        d
+    }
+
+    fn device_at_rest() -> Device {
+        device(&[], None)
+    }
+
+    #[test]
+    fn snmp_says_what_it_is_sure_of() {
+        // A printer's model is its first device, not its network card.
+        let d = snmp(
+            "Brother NC-8900w, Firmware Ver.1.20",
+            "1.3.6.1.4.1.2435.2.3.9.1",
+            Some("Brother HL-L2350DW series"),
+        );
+        assert_eq!(
+            identify_why(&d),
+            Some((
+                ("Printer", Some("Brother HL-L2350DW series".into())),
+                "SNMP reports model Brother HL-L2350DW series".into()
+            ))
+        );
+        // Its default name is junk, so SNMP names nothing here.
+        assert_eq!(name(&d), None);
+
+        // HP makes everything: the description decides.
+        let d = snmp(
+            "HP ETHERNET MULTI-ENVIRONMENT,ROM none,JETDIRECT,JD153",
+            "1.3.6.1.4.1.11.2.3.9.1",
+            None,
+        );
+        assert_eq!(identify(&d), Some(("Printer", Some("HP".into()))));
+        let d = snmp(
+            "ProCurve J9019B Switch 2510B-24",
+            "1.3.6.1.4.1.11.2.3.7.11.89",
+            None,
+        );
+        assert_eq!(identify(&d), Some(("Network gear", Some("HP".into()))));
+
+        // By maker alone, and the reason says so.
+        let d = snmp(
+            "APC Web/SNMP Management Card",
+            "1.3.6.1.4.1.318.1.3.27",
+            None,
+        );
+        assert_eq!(
+            identify_why(&d),
+            Some((
+                ("UPS / PDU", Some("APC".into())),
+                "SNMP object ID is APC's".into()
+            ))
+        );
+
+        // A Windows PC's first device is a print queue, and Linux says only
+        // its kernel: neither is judged, and other rules still apply.
+        let mut d = snmp(
+            "Hardware: Intel64 Family 6 - Software: Windows Version 6.3",
+            "1.3.6.1.4.1.311.1.1.3.1.1",
+            Some("Microsoft XPS Document Writer"),
+        );
+        assert_eq!(identify(&d), None);
+        d.open_ports = vec![135];
+        assert_eq!(identify(&d), Some(("Computer", Some("Windows PC".into()))));
+        let d = snmp(
+            "Linux nas 5.10.55 #1 SMP x86_64",
+            "1.3.6.1.4.1.8072.3.2.10",
+            None,
+        );
+        assert_eq!(identify(&d), None);
+    }
+
+    #[test]
+    fn snmp_names_come_after_netbios() {
+        let mut d = snmp("RouterOS RB4011iGS+", "1.3.6.1.4.1.14988.1", None);
+        d.snmp.as_mut().unwrap().name = Some("attic-switch".into());
+        d.hostname = Some("192-168-1-2.lan".into());
+        assert_eq!(
+            name_and_source(&d),
+            Some(("attic-switch".into(), "SNMP".into()))
+        );
+        assert_eq!(
+            identify(&d),
+            Some(("Network gear", Some("MikroTik".into())))
+        );
+    }
+
     #[test]
     fn fire_tv_names() {
         let mut d = device(&[], None);
@@ -1149,6 +1333,8 @@ mod tests {
     fn junk_names() {
         assert!(is_junk_name("36814e2569ca121f"));
         assert!(is_junk_name("brwc0b5d7e7747d"));
+        assert!(is_junk_name("BRN3C2AF4A1B2C3"));
+        assert!(!is_junk_name("écran-du-salon"));
         assert!(is_junk_name("36814e2569ca121f.local"));
         assert!(!is_junk_name("bitaxe01.local"));
         assert!(is_junk_name("wlan0"));

@@ -2,6 +2,8 @@
 
 **See what's on your local network.** `lsnet` finds every device on your LAN and tells you what each one is (an Apple TV, a printer, a smart plug, a NAS) in about two seconds, with no configuration and no flags to learn.
 
+![lsnet browsing its demo network: devices and their details, a filter, the services view and the theme picker](docs/demo.gif)
+
 ```
 $ lsnet
  lsnet  1 Devices  2 Services
@@ -12,22 +14,22 @@ $ lsnet
 │    192.168.0.78    Audinate Pty L            Audio device          ││ Name from      AirPlay                             │
 │    192.168.1.1     Home Router               Router (gateway)      ││                                                    │
 │    192.168.1.8     Brother HL-L2350DW series Printer               ││ IP             192.168.1.52                        │
-│    192.168.1.14    diskstation.local         NAS                   ││ MAC            f0:18:98:3c:62:8d                   │
-│    192.168.1.40    ptz-cam-2.local           Video device          ││ Vendor         Apple                               │
-│›   192.168.1.52    Living Room               TV / streamer         ││ Hostname       living-room.lan                     │
-│  → 192.168.1.60    Kitchen                   Speaker               ││ Ping           2.4 ms                              │
-│    192.168.1.71    Office speaker            Speaker               ││ First seen     1 Sep 2026                          │
-│    192.168.1.77    Stagebox-FOH              Audio device          ││ Open ports     7000 AirPlay · 62078 iOS sync       │
-│    192.168.1.88    kp115                     Smart plug            ││                                                    │
-│  + 192.168.1.90    blink-mini                Camera                ││ Bonjour (mDNS)                                     │
-│    192.168.1.112   alex-phone                Phone / tablet        ││ Name           Living-Room.local                   │
-│    192.168.1.130   raspberrypi.local         Computer              ││ airplay        Living Room                         │
-│  ~ 192.168.1.150   pihole                    DNS server            ││                model = AppleTV14,1                 │
-│    192.168.1.196   Alex's MacBook Pro        Computer (this device)││ raop           6C4A85D1E0F2@Living Room            │
-│    192.168.1.201   Intel                     Computer              ││                am = AppleTV14,1                    │
-│    192.168.1.203   Dexatek                                         ││ companion-link Living Room                         │
-│    192.168.1.230   Espressif                 IoT device            ││                rpmd = AppleTV14,1                  │
-│  - 192.168.1.95    myq-garage                Garage door           ││                                                    │
+│    192.168.1.14    diskstation.local         NAS                   ││ IPv6           fe80::1c9f:4a2e:7d31:b8c6           │
+│    192.168.1.40    ptz-cam-2.local           Video device          ││ MAC            f0:18:98:3c:62:8d                   │
+│›   192.168.1.52    Living Room               TV / streamer         ││ Vendor         Apple                               │
+│  → 192.168.1.60    Kitchen                   Speaker               ││ Hostname       living-room.lan                     │
+│    192.168.1.71    Office speaker            Speaker               ││ Ping           2.4 ms                              │
+│    192.168.1.77    Stagebox-FOH              Audio device          ││ First seen     1 Sep 2026                          │
+│    192.168.1.88    kp115                     Smart plug            ││ Open ports     7000 AirPlay · 62078 iOS sync       │
+│  + 192.168.1.90    blink-mini                Camera                ││                                                    │
+│    192.168.1.112   alex-phone                Phone / tablet        ││ Bonjour (mDNS)                                     │
+│    192.168.1.130   raspberrypi.local         Computer              ││ Name           Living-Room.local                   │
+│  ~ 192.168.1.150   pihole                    DNS server            ││ airplay        Living Room                         │
+│    192.168.1.196   Alex's MacBook Pro        Computer (this device)││                model = AppleTV14,1                 │
+│    192.168.1.201   Intel                     Computer              ││ raop           6C4A85D1E0F2@Living Room            │
+│    192.168.1.203   Dexatek                                         ││                am = AppleTV14,1                    │
+│    192.168.1.230   Espressif                 IoT device            ││ companion-link Living Room                         │
+│  - 192.168.1.95    myq-garage                Garage door           ││                rpmd = AppleTV14,1                  │
 └────────────────────────────────────────────────────────────────────┘└────────────────────────────────────────────────────┘
  ↑↓ move  tab details  ⏎ copy IP  c copy all  / filter  s sort  r rescan  t theme  ? help  q quit
 ```
@@ -38,12 +40,12 @@ It's meant to answer the question "what is that?" faster and more simply than [n
 
 - **Zero config.** It detects your interface, subnet and gateway on its own.
 - **Fast.** Every discovery method runs concurrently, and a /24 takes about 2 seconds.
-- **Identifies devices, not just addresses.** It combines what devices announce about themselves (Bonjour, UPnP, Windows and Samba NetBIOS names), their naming conventions, web UI banners, open ports (including homelab staples like Proxmox, Plex and Home Assistant) and MAC vendors into a type and a model.
+- **Identifies devices, not just addresses.** It combines what devices announce about themselves (Bonjour, UPnP, SNMP, Windows and Samba NetBIOS names), their naming conventions, web UI banners, open ports (including homelab staples like Proxmox, Plex and Home Assistant) and MAC vendors into a type and a model.
 - **Works without root.** On Linux and Windows you even get MAC addresses and vendors without it. On macOS, some come through anyway: Windows and Samba hosts report theirs over NetBIOS, and AirPlay speakers and Linux machines put theirs in their Bonjour names.
 - **macOS, Linux and Windows.**
 - **Themes.** In your terminal's own colors, or any of [Omarchy](https://omarchy.org)'s themes and lshn's `hn`, `amber` and `green`, picked with `t`. On Omarchy it follows the desktop's theme.
 - **Browse or print.** In a terminal, `lsnet` opens a browser with everything known about each device, driven by the keyboard or the mouse, and any line of it copies with a keypress or a click. When piped, or with `-l`, it prints a table.
-- **Find your servers.** `2` in the browser, or `-s`, lists every service on the network (web UIs, SSH, file shares, databases, Plex, Proxmox, Home Assistant) with the address to reach it.
+- **Find your servers.** `2` in the browser, or `-s`, lists every service on the network (web UIs, SSH, file shares, databases, Plex, Proxmox, Home Assistant) with the address to reach it, this machine's included. `--ports` adds ports of your own to look for.
 - **One key to its web page.** Press `w` on a router, a printer, a NAS or a Plex server and its web UI opens in your browser, at the right port and scheme: DSM on a Synology, not port 80. No more typing `https://192.168.1.14:5001` from memory. See [Opening web UIs](#opening-web-uis).
 - **Says what changed.** It remembers each network, so the next scan points out new devices, ones that moved or were renamed, and ones that didn't answer.
 - **Scriptable.** `--json` outputs every piece of evidence behind each identification.
@@ -122,12 +124,14 @@ lsnet [OPTIONS]
   -i, --interface <NAME>  Network interface to scan (default: the one your internet traffic uses)
   -n, --net <CIDR>        Network to scan, up to a /16 (default: see "Which network it scans")
       --also <CIDR>       Also ask for another network's addresses on this one (see "Address problems")
+  -p, --ports <PORTS>     More TCP ports to check on every device found, like 2049,8200-8210
   -l, --list              Print a table instead of opening the device browser
   -v, --verbose           Print a table that also shows hostnames, open ports and advertised services
   -s, --services          List the services running on the network instead of devices
       --json              Print results as JSON
   -t, --timeout <MS>      How long to wait for devices to answer [default: 1200]
       --no-dns            Skip reverse DNS lookups
+      --no-snmp           Don't ask devices to describe themselves over SNMP
       --demo              Show a made-up network instead of scanning (no packets are sent)
       --no-history        Don't compare with earlier scans of this network, or remember this one
       --no-mouse          Leave the mouse to the terminal, so its own text selection works
@@ -146,6 +150,7 @@ lsnet -s -l            # print every service and its address
 lsnet -t 3000          # wait longer for sleepy Wi-Fi devices
 lsnet --net 10.0.0.0/16 # scan all of a large network, not just your /24
 sudo lsnet --also 192.168.0.0/24 # find devices left on another network's addresses
+lsnet -s -p 2049,8200-8210 # look for NFS and a range of your own, too
 lsnet --json | jq '.[] | select(.type == "Printer")'
 lsnet --demo           # try it without a network
 ```
@@ -206,29 +211,30 @@ Press `2` in the browser, or start it with `lsnet -s`, to list services instead 
 $ lsnet -s
  lsnet  1 Devices  2 Services
  19 devices on 192.168.1.0/24 (en0) in 2.0s · 1 address conflict · 1 self-assigned address · 1 off-subnet address
-┌ Services (23) ──────────────────────────────────────────────┐┌ diskstation.local ────────────────────────────────────────┐
+┌ Services (24) ──────────────────────────────────────────────┐┌ diskstation.local ────────────────────────────────────────┐
 │  ADDRESS ▾          SERVICE        HOST                     ││ NAS · Synology DS920+                                     │
 │  192.168.1.1:53     DNS            Home Router              ││ Type from     UPnP Basic by Synology                      │
 │  192.168.1.1:80     HTTP           Home Router              ││ Name from     .local name                                 │
 │  192.168.1.1:443    HTTPS          Home Router              ││                                                           │
 │  192.168.1.8:80     HTTP           Brother HL-L2350DW series││ IP            192.168.1.14                                │
-│  192.168.1.8:443    HTTPS          Brother HL-L2350DW series││ MAC           00:11:32:66:d8:71                           │
-│  192.168.1.8:9100   printing       Brother HL-L2350DW series││ Vendor        Synology                                    │
-│  192.168.1.14:22    SSH            diskstation.local        ││ Hostname      diskstation.lan                             │
-│  192.168.1.14:80    HTTP           diskstation.local        ││ Ping          0.41 ms                                     │
-│  192.168.1.14:139   NetBIOS        diskstation.local        ││ First seen    1 Sep 2026                                  │
-│  192.168.1.14:443   HTTPS          diskstation.local        ││ Open ports    22 SSH · 80 HTTP · 139 NetBIOS · 443 HTTPS  │
-│  192.168.1.14:445   SMB            diskstation.local        ││               · 445 SMB · 5001 HTTPS · 32400 Plex         │
-│  192.168.1.14:5001  HTTPS          diskstation.local        ││                                                           │
-│› 192.168.1.14:32400 Plex           diskstation.local        ││ Bonjour (mDNS)                                            │
-│  192.168.1.40:80    HTTP           ptz-cam-2.local          ││ Name          diskstation.local                           │
-│  192.168.1.88:80    HTTP           kp115                    ││ adisk         diskstation                                 │
-│  192.168.1.130:22   SSH            raspberrypi.local        ││ smb           diskstation                                 │
-│  192.168.1.130:1883 MQTT           raspberrypi.local        ││                                                           │
-│  192.168.1.130:8123 Home Assistant raspberrypi.local        ││ UPnP                                                      │
-│  192.168.1.150:22   SSH            pihole                   ││ Name          diskstation (DS920+)                        │
-│  192.168.1.150:53   DNS            pihole                   ││ Manufacturer  Synology                                    │
-│  192.168.1.150:80   HTTP           pihole                   ││ Model         DS920+                                      │
+│  192.168.1.8:443    HTTPS          Brother HL-L2350DW series││ IPv6          fe80::211:32ff:fe66:d871                    │
+│  192.168.1.8:9100   printing       Brother HL-L2350DW series││ MAC           00:11:32:66:d8:71                           │
+│  192.168.1.14:22    SSH            diskstation.local        ││ Vendor        Synology                                    │
+│  192.168.1.14:80    HTTP           diskstation.local        ││ Hostname      diskstation.lan                             │
+│  192.168.1.14:139   NetBIOS        diskstation.local        ││ Ping          0.41 ms                                     │
+│  192.168.1.14:443   HTTPS          diskstation.local        ││ First seen    1 Sep 2026                                  │
+│  192.168.1.14:445   SMB            diskstation.local        ││ Open ports    22 SSH · 80 HTTP · 139 NetBIOS · 443 HTTPS  │
+│  192.168.1.14:5001  HTTPS          diskstation.local        ││               · 445 SMB · 5001 HTTPS · 32400 Plex         │
+│› 192.168.1.14:32400 Plex           diskstation.local        ││                                                           │
+│  192.168.1.40:80    HTTP           ptz-cam-2.local          ││ Bonjour (mDNS)                                            │
+│  192.168.1.88:80    HTTP           kp115                    ││ Name          diskstation.local                           │
+│  192.168.1.130:22   SSH            raspberrypi.local        ││ adisk         diskstation                                 │
+│  192.168.1.130:1883 MQTT           raspberrypi.local        ││ smb           diskstation                                 │
+│  192.168.1.130:8123 Home Assistant raspberrypi.local        ││                                                           │
+│  192.168.1.150:22   SSH            pihole                   ││ UPnP                                                      │
+│  192.168.1.150:53   DNS            pihole                   ││ Name          diskstation (DS920+)                        │
+│  192.168.1.150:80   HTTP           pihole                   ││ Manufacturer  Synology                                    │
+│  192.168.1.196:22   SSH            Alex's MacBook Pro       ││ Model         DS920+                                      │
 │  192.168.1.201:3389 RDP            Intel                    ││ Device type   urn:schemas-upnp-org:device:Basic:1         │
 │  192.168.1.230:80   HTTP           Espressif                ││                                                           │
 │                                                             ││ Web (port 80)                                             │
@@ -238,7 +244,16 @@ $ lsnet -s
  ↑↓ move  tab details  ⏎ copy address  c copy all  w open  / filter  s sort  r rescan  t theme  ? help  q quit
 ```
 
-It lists the open ports `lsnet` found (all but AirPlay, Cast and iPhone sync, which are how devices talk to phones rather than servers) plus the web, SSH, file-sharing, VNC and similar services devices advertise over Bonjour, on whatever port they use. This machine's own services aren't listed, since `lsnet` doesn't probe it. `lsnet -s -l` prints the same list as a table (see [Text output](#text-output)), and `lsnet -s --json` gives `ip`, `port`, `service` and `host` for each.
+It lists the open ports `lsnet` found (all but AirPlay, Cast and iPhone sync, which are how devices talk to phones rather than servers) plus the web, SSH, file-sharing, VNC and similar services devices advertise over Bonjour, on whatever port they use. This machine's own are listed with the rest, when they answer at its network address: a server listening only on `localhost` isn't on the network. `lsnet -s -l` prints the same list as a table (see [Text output](#text-output)), and `lsnet -s --json` gives `ip`, `port`, `service` and `host` for each.
+
+To look for ports `lsnet` doesn't check (see `open_ports` under [Output fields](#output-fields)), name them with `--ports`, singly or as ranges:
+
+```sh
+lsnet -s --ports 2049,5900        # NFS and VNC
+lsnet -s -p 8200-8210 -p 9000     # a range, and the option given twice
+```
+
+They're tried on every device found, not on every address, so they cost little, and each one open is listed by its number. It takes up to 1,000 ports. Past that it's a port scan, and [nmap](https://nmap.org) is the tool.
 
 ### Opening web UIs
 
@@ -325,6 +340,7 @@ $ lsnet -s -l
  192.168.1.150:22    SSH             pihole
  192.168.1.150:53    DNS             pihole
  192.168.1.150:80    HTTP            pihole
+ 192.168.1.196:22    SSH             Alex's MacBook Pro
  192.168.1.201:3389  RDP             Intel
  192.168.1.230:80    HTTP            Espressif
 
@@ -342,7 +358,7 @@ The NAME column shows the friendliest name a device gives itself, in this order:
 
 1. A name someone set in its app or settings, from AirPlay, HomeKit or Cast ("Living Room", "Office speaker")
 2. Its primary `.local` hostname, kept whole ("octopi.local", "homeassistant.local")
-3. A generic service or UPnP name (a file share, a printer queue, "Home Router")
+3. A generic service or UPnP name (a file share, a printer queue, "Home Router"), or its NetBIOS or SNMP name
 4. The host part of its DNS name from your router ("fhrouter")
 
 When MAC vendors are known (always on Linux and Windows, and with `sudo` on macOS), the column becomes NAME/VENDOR. A device with none of the names above shows its manufacturer instead, in regular weight rather than bold, so you can tell it apart from a real name:
@@ -461,10 +477,34 @@ Most of this comes from listening to ARP, which needs raw access (`sudo` on macO
 | **Reverse DNS** | Hostnames from your router's DHCP leases | no |
 | **HTTP banner** | `Server` header and page `<title>` from web UIs | no |
 | **TP-Link Kasa** | The names plugs, switches and bulbs were given in the Kasa app, and their models, from a UDP broadcast | no |
+| **SNMP** | What printers, managed switches, UPSes and some NASes say of themselves: a description, a name, their maker, and a printer's model | no |
+| **IPv6 ping** | Each device's link-local IPv6 address, from one ping to all of them at once (macOS and Linux) | no |
 
 Bonjour also finds Dante audio and NDI video devices, and the name a Dante device was given in Dante Controller.
 
-Then it classifies each device using the most specific evidence available: what the device says about its own model, then naming conventions, then web banners, then advertised services, then open ports, then the MAC vendor. The vendor database comes from the IEEE registry and is built into the binary, so no network lookups are needed.
+Then it classifies each device using the most specific evidence available: what the device says about its own model (Bonjour, Kasa, UPnP, then SNMP), then naming conventions, then web banners, then advertised services, then open ports, then the MAC vendor. The vendor database comes from the IEEE registry and is built into the binary, so no network lookups are needed.
+
+### SNMP
+
+Every device found is asked for SNMP's system group (its description, name and object ID) and for its first device's description, which on a printer is the printer's model. The questions are SNMPv1 with the community `public`, the read-only default wherever SNMP is switched on. Devices set up with another community, or with SNMPv3 alone, don't answer.
+
+A printer, a switch, a UPS or a NAS is called that on SNMP's word. A description like `Linux nas 5.10` names only the kernel, so it's shown in the details and decides nothing. On a network whose monitoring would mind the questions, `--no-snmp` leaves them out.
+
+### IPv6
+
+`lsnet` lists devices by their IPv4 address, and adds each one's link-local IPv6 address (`fe80::...`) where it can find it. One ping to the all-nodes address (`ff02::1`) reaches every device on the link, and most answer: Macs, iPhones, Linux and much that's built on it. Windows doesn't, and plenty of smart-home gear has no IPv6. Bonjour gives the addresses of whatever advertises over it.
+
+An answer is matched to a device by MAC address, so without MACs (see [Running without sudo](#running-without-sudo)) only Bonjour's are shown. It works the other way too: an address made from a MAC, like `fe80::211:32ff:fe66:d871`, gives a device its MAC and vendor when nothing else did.
+
+To use a link-local address, say which interface it's on: `ssh admin@fe80::211:32ff:fe66:d871%en0`. It reaches a device whatever its IPv4 address, including one flagged `off-subnet` or `link-local` (see [Address problems](#address-problems)).
+
+With `sudo`, when the whole network was scanned, anything that answered over IPv6 and isn't one of the devices listed is named under the results:
+
+```
+1 more device answers over IPv6 only: fe80::ba27:ebff:fe5a:11c4 (b8:27:eb:5a:11:c4, Raspberry Pi)
+```
+
+The ping isn't sent on Windows, or on Linux when `net.ipv4.ping_group_range` leaves you out. There, only Bonjour's addresses are shown.
 
 ### Running without sudo
 
@@ -497,15 +537,16 @@ In `--json`, each device includes:
 | `hostname` | Reverse DNS name |
 | `ping_ms` | The best of three pings' round trips, in milliseconds, if it answered |
 | `randomized_mac` | The device uses a private, per-network MAC (typical of phones and laptops) |
-| `open_ports` | Which of the probed ports are open. Every address is checked for 22, 80, 443, 445, 7000, 8008, 9100 and 62078, and every live device also for 21, 25, 53, 110, 111, 135, 139, 143, 993, 995, 1433, 1521, 1883, 3306, 3389, 5000, 5001, 5060, 5432, 5672, 6379, 8000, 8001, 8006, 8080, 8081, 8096, 8123, 8443, 8888, 9090, 9091, 9443, 9999, 27017 and 32400 |
+| `ipv6` | Its link-local IPv6 addresses, where they're known (see [IPv6](#ipv6)) |
+| `open_ports` | Which of the probed ports are open. Every address is checked for 22, 80, 443, 445, 7000, 8008, 9100 and 62078, and every live device also for 21, 25, 53, 110, 111, 135, 139, 143, 993, 995, 1433, 1521, 1883, 3306, 3389, 5000, 5001, 5060, 5432, 5672, 6379, 8000, 8001, 8006, 8080, 8081, 8096, 8123, 8443, 8888, 9090, 9091, 9443, 9999, 27017 and 32400, and for any named with `--ports` |
 | `gateway`, `this_device` | Your router, and the machine running the scan |
 | `flags`, `other_macs`, `other_ips` | Address problems (see [Address problems](#address-problems)), the other MACs in an address conflict, and any addresses from other networks the device also uses |
 | `first_seen`, `changes` | When `lsnet` first saw the device on this network, in Unix seconds, and what changed since the last scan: `new`, `moved` (with `from`) or `renamed` (with `from`). See [What changed since last time](#what-changed-since-last-time) |
-| `mdns`, `ssdp`, `http` | The raw evidence: Bonjour services with their TXT records and ports, UPnP description fields, web banner |
+| `mdns`, `ssdp`, `snmp`, `http` | The raw evidence: Bonjour services with their TXT records and ports, UPnP description fields, SNMP's description, name, object ID and first device, web banner |
 
 ## Limitations
 
-- **IPv4 only.** Networks larger than /22 are narrowed to your local /24 to keep scans fast, unless you ask for more with `--net` (see [Which network it scans](#which-network-it-scans)).
+- **Devices are found over IPv4.** One with only IPv6 is named under the results, not listed (see [IPv6](#ipv6)). Networks larger than /22 are narrowed to your local /24 to keep scans fast, unless you ask for more with `--net` (see [Which network it scans](#which-network-it-scans)).
 - **Identification is heuristic.** Devices that announce nothing and have no open ports show up with no type. Running with `sudo` at least adds their vendor, in the NAME/VENDOR column.
 - **The Linux ARP cache can be stale.** Entries for devices that just left the network can linger for a few seconds after they disconnect.
 - **Sleepy devices can be missed.** Phones and IoT devices in Wi-Fi power-save mode may not answer within the default window. The browser keeps listening and adds them when they speak up. For printed output, use `-t` to wait longer.

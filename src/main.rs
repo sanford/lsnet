@@ -5,6 +5,7 @@ mod demo;
 mod history;
 mod http;
 mod iface;
+mod ipv6;
 mod kasa;
 mod live;
 mod mdns;
@@ -19,6 +20,7 @@ mod probe;
 mod readme;
 mod scan;
 mod services;
+mod snmp;
 mod ssdp;
 mod theme;
 mod tui;
@@ -31,9 +33,10 @@ use netbios::NetbiosInfo;
 use owo_colors::{OwoColorize, Stream::Stderr};
 use pnet_base::MacAddr;
 use serde::{Deserialize, Serialize};
+use snmp::SnmpInfo;
 use ssdp::SsdpInfo;
 use std::io::{IsTerminal, Write};
-use std::net::Ipv4Addr;
+use std::net::{Ipv4Addr, Ipv6Addr};
 use std::path::Path;
 use std::process::ExitCode;
 use std::sync::{Arc, Mutex, mpsc};
@@ -57,6 +60,11 @@ struct Args {
     /// left with a static address from it. Needs sudo. May be given again
     #[arg(long, value_name = "CIDR", value_parser = iface::parse_net)]
     also: Vec<ipnetwork::Ipv4Network>,
+
+    /// More TCP ports to check on every device found, like 2049,8200-8210.
+    /// Up to 1,000. May be given again
+    #[arg(short, long, value_name = "PORTS", value_delimiter = ',', value_parser = probe::parse_ports)]
+    ports: Vec<std::ops::RangeInclusive<u16>>,
 
     /// Print a table instead of opening the device browser (the default
     /// when output isn't a terminal)
@@ -84,8 +92,12 @@ struct Args {
     #[arg(long)]
     no_dns: bool,
 
+    /// Don't ask devices to describe themselves over SNMP
+    #[arg(long)]
+    no_snmp: bool,
+
     /// Show a made-up network instead of scanning (no packets are sent)
-    #[arg(long, conflicts_with_all = ["interface", "net", "also", "timeout", "no_dns"])]
+    #[arg(long, conflicts_with_all = ["interface", "net", "also", "ports", "timeout", "no_dns", "no_snmp"])]
     demo: bool,
 
     /// Don't compare with earlier scans of this network, or remember this one
@@ -155,6 +167,9 @@ pub struct Device {
     /// Addresses outside this network that it also uses.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     other_ips: Vec<Ipv4Addr>,
+    /// Its link-local IPv6 addresses, as far as they're known.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    ipv6: Vec<Ipv6Addr>,
     /// When this network's history first saw it, in Unix seconds.
     #[serde(skip_deserializing, skip_serializing_if = "Option::is_none")]
     first_seen: Option<u64>,
@@ -175,6 +190,8 @@ pub struct Device {
     kasa: Option<KasaInfo>,
     #[serde(skip_serializing_if = "Option::is_none")]
     netbios: Option<NetbiosInfo>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    snmp: Option<SnmpInfo>,
     #[serde(skip_serializing_if = "Option::is_none")]
     http: Option<http::Banner>,
 }
@@ -201,6 +218,7 @@ impl Device {
             flags: Vec::new(),
             other_macs: Vec::new(),
             other_ips: Vec::new(),
+            ipv6: Vec::new(),
             first_seen: None,
             last_seen: None,
             changes: Vec::new(),
@@ -209,6 +227,7 @@ impl Device {
             ssdp: None,
             kasa: None,
             netbios: None,
+            snmp: None,
             http: None,
         }
     }

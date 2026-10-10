@@ -22,7 +22,7 @@ use ratatui::widgets::{
 };
 use ratatui::{DefaultTerminal, Frame};
 use std::io::Write;
-use std::net::Ipv4Addr;
+use std::net::{Ipv4Addr, Ipv6Addr};
 use std::process::{Command, Stdio};
 use std::sync::mpsc::TryRecvError;
 use std::time::{Duration, Instant};
@@ -1534,6 +1534,13 @@ fn haystack(d: &Device) -> String {
         d.vendor.map(String::from),
         d.mac.clone(),
         d.hostname.clone(),
+        Some(
+            d.ipv6
+                .iter()
+                .map(Ipv6Addr::to_string)
+                .collect::<Vec<_>>()
+                .join("\n"),
+        ),
     ];
     // "disagrees" and "names differ" find the devices whose sources do.
     let disputed = [
@@ -1648,6 +1655,10 @@ fn details(d: &Device, cols: u16) -> Vec<Item> {
         let ips: Vec<String> = d.other_ips.iter().map(Ipv4Addr::to_string).collect();
         field(&mut out, "Also uses", Some(ips.join(" · ")));
     }
+    if !d.ipv6.is_empty() {
+        let ips: Vec<String> = d.ipv6.iter().map(Ipv6Addr::to_string).collect();
+        field(&mut out, "IPv6", Some(ips.join(" · ")));
+    }
     field(&mut out, "MAC", d.mac.clone());
     for mac in &d.other_macs {
         let vendor = mac.parse().ok().and_then(crate::oui::vendor);
@@ -1747,6 +1758,18 @@ fn details(d: &Device, cols: u16) -> Vec<Item> {
         section(&mut out, "NetBIOS");
         field(&mut out, "Name", Some(n.name.clone()));
         field(&mut out, "MAC", n.mac.clone());
+    }
+
+    if let Some(s) = &d.snmp {
+        section(&mut out, "SNMP");
+        field(&mut out, "Name", s.name.clone());
+        field(&mut out, "Description", s.description.clone());
+        field(&mut out, "Device", s.device.clone());
+        let object_id = s.object_id.as_ref().map(|id| match s.maker() {
+            Some(maker) => format!("{id} ({maker})"),
+            None => id.clone(),
+        });
+        field(&mut out, "Object ID", object_id);
     }
 
     if let Some(h) = &d.http {
@@ -2104,7 +2127,12 @@ mod tests {
         app.refilter(None);
         assert_eq!(
             rows(&app),
-            ["192.168.1.14:22", "192.168.1.150:22", "192.168.1.130:22"]
+            [
+                "192.168.1.196:22",
+                "192.168.1.14:22",
+                "192.168.1.150:22",
+                "192.168.1.130:22"
+            ]
         );
     }
 
@@ -2181,7 +2209,7 @@ mod tests {
                 .and_then(|it| it.copy)
         };
         // From the heading, past where the type and name came from and over
-        // the gap, to the IP and MAC.
+        // the gap, to the IP, its IPv6 address and the MAC.
         assert_eq!(
             copy(&mut app).as_deref(),
             Some("TV / streamer · Apple TV 4K (3rd gen)")
@@ -2190,6 +2218,8 @@ mod tests {
         press(&mut app, KeyCode::Char('j'));
         press(&mut app, KeyCode::Char('j'));
         assert_eq!(copy(&mut app).as_deref(), Some("192.168.1.52"));
+        press(&mut app, KeyCode::Down);
+        assert_eq!(copy(&mut app).as_deref(), Some("fe80::1c9f:4a2e:7d31:b8c6"));
         press(&mut app, KeyCode::Down);
         assert_eq!(copy(&mut app).as_deref(), Some("f0:18:98:3c:62:8d"));
         // A TXT record copies only its value.

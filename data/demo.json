@@ -92,6 +92,9 @@
     ],
     "gateway": false,
     "this_device": false,
+    "ipv6": [
+      "fe80::21b:a9ff:fed2:e1f0"
+    ],
     "mdns": {
       "hostname": "BRW001BA9D2E1F0.local",
       "services": {
@@ -107,6 +110,12 @@
         "ipp": 631,
         "pdl-datastream": 9100
       }
+    },
+    "snmp": {
+      "name": "BRW001BA9D2E1F0",
+      "description": "Brother NC-8900w, Firmware Ver.1.20 (17.11.21),MID 8C5-K4M",
+      "object_id": "1.3.6.1.4.1.2435.2.3.9.1",
+      "device": "Brother HL-L2350DW series"
     }
   },
   {
@@ -132,6 +141,9 @@
     ],
     "gateway": false,
     "this_device": false,
+    "ipv6": [
+      "fe80::211:32ff:fe66:d871"
+    ],
     "mdns": {
       "hostname": "diskstation.local",
       "services": {
@@ -202,6 +214,9 @@
     ],
     "gateway": false,
     "this_device": false,
+    "ipv6": [
+      "fe80::1c9f:4a2e:7d31:b8c6"
+    ],
     "mdns": {
       "hostname": "Living-Room.local",
       "services": {
@@ -451,9 +466,14 @@
     "mac": "f0:18:98:a1:b2:c3",
     "randomized_mac": false,
     "hostname": null,
-    "open_ports": [],
+    "open_ports": [
+      22
+    ],
     "gateway": false,
     "this_device": true,
+    "ipv6": [
+      "fe80::8e4:71c2:5a0d:93b7"
+    ],
     "mdns": {
       "hostname": "Alexs-MacBook-Pro.local",
       "services": {

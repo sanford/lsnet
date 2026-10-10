@@ -71,11 +71,10 @@ impl Json {
     }
 }
 
-/// Every service on `devices` (except this machine, whose ports we don't
-/// probe), sorted by address and then port.
+/// Every service on `devices`, sorted by address and then port.
 pub fn list(devices: &[Device]) -> Vec<Service> {
     let mut found: BTreeMap<(Ipv4Addr, u16), (usize, Option<&'static str>)> = BTreeMap::new();
-    for (i, d) in devices.iter().enumerate().filter(|(_, d)| !d.this_device) {
+    for (i, d) in devices.iter().enumerate() {
         let admin = admin(d).map_or(&[][..], |a| a.ports);
         for &port in d
             .open_ports
@@ -369,8 +368,9 @@ mod tests {
         nas.mdns = Some(m);
         let mut phone = Device::new(Ipv4Addr::new(192, 168, 1, 2));
         phone.open_ports = vec![62078];
+        // This machine's are servers like any other's.
         let mut me = Device::new(Ipv4Addr::new(192, 168, 1, 3));
-        me.open_ports = vec![22];
+        me.open_ports = vec![22, 7000];
         me.this_device = true;
 
         let devices = [phone, me, nas];
@@ -381,6 +381,7 @@ mod tests {
         assert_eq!(
             rows,
             [
+                ("192.168.1.3:22".into(), 1, Some("SSH")),
                 ("192.168.1.14:22".into(), 2, Some("SSH")),
                 ("192.168.1.14:80".into(), 2, Some("HTTP")),
                 ("192.168.1.14:5000".into(), 2, Some("HTTP")),

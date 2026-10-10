@@ -7,6 +7,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::io::ErrorKind;
 use std::net::Ipv4Addr;
+use std::ops::RangeInclusive;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
@@ -35,11 +36,12 @@ const SERVICES: &[u16] = &[
 pub const AWAKE_WAIT: Duration = Duration::from_millis(250);
 
 /// Live hosts and which ports they have open: `LIVENESS` on every target,
-/// then `SERVICES` on each host as soon as it answers. Up to a /22 every
+/// then `SERVICES` and `extra` (`--ports`) on each host as soon as it answers. Up to a /22 every
 /// check starts at once; beyond that they start as earlier ones finish.
 /// `checked` counts the liveness checks done, of `liveness_checks(targets)`.
 pub async fn scan(
     targets: &[Ipv4Addr],
+    extra: &[u16],
     wait: Duration,
     checked: &AtomicUsize,
 ) -> HashMap<Ipv4Addr, Vec<u16>> {
@@ -77,7 +79,7 @@ pub async fn scan(
             let left = deadline
                 .saturating_duration_since(Instant::now())
                 .max(AWAKE_WAIT);
-            services.extend(SERVICES.iter().map(|&port| (ip, port, left)));
+            services.extend(service_ports(extra).map(|port| (ip, port, left)));
         }
         let ports = alive.entry(ip).or_default();
         if open {
@@ -97,9 +99,9 @@ pub fn liveness_checks(targets: &[Ipv4Addr]) -> usize {
 
 /// Every port on one host found some other way (ARP, ping, mDNS, SSDP), for
 /// devices that ignored the liveness ports or woke up late.
-pub async fn all_ports(ip: Ipv4Addr, wait: Duration) -> Vec<u16> {
+pub async fn all_ports(ip: Ipv4Addr, extra: &[u16], wait: Duration) -> Vec<u16> {
     let mut set = JoinSet::new();
-    for &port in LIVENESS.iter().chain(SERVICES) {
+    for port in LIVENESS.iter().copied().chain(service_ports(extra)) {
         set.spawn(check(ip, port, wait));
     }
     let mut open = Vec::new();
@@ -110,6 +112,50 @@ pub async fn all_ports(ip: Ipv4Addr, wait: Duration) -> Vec<u16> {
     }
     open.sort_unstable();
     open
+}
+
+/// `SERVICES`, then whichever of `extra` aren't checked already.
+fn service_ports(extra: &[u16]) -> impl Iterator<Item = u16> {
+    let known = |p: &u16| LIVENESS.contains(p) || SERVICES.contains(p);
+    let extra = extra.iter().copied().filter(move |p| !known(p));
+    SERVICES.iter().copied().chain(extra)
+}
+
+/// The most ports `--ports` takes. Each is tried on every device found, and
+/// past this it's a port scan, which nmap does better.
+pub const MAX_EXTRA: usize = 1000;
+
+/// One item of `--ports`: a port, or a range like 8000-8100.
+pub fn parse_ports(s: &str) -> Result<RangeInclusive<u16>, String> {
+    let port = |p: &str| {
+        p.trim()
+            .parse::<u16>()
+            .ok()
+            .filter(|p| *p != 0)
+            .ok_or_else(|| format!("'{p}' isn't a port from 1 to 65535"))
+    };
+    let (first, last) = match s.split_once('-') {
+        Some((first, last)) => (port(first)?, port(last)?),
+        None => (port(s)?, port(s)?),
+    };
+    if first > last {
+        return Err(format!("{s} runs backwards; did you mean {last}-{first}?"));
+    }
+    Ok(first..=last)
+}
+
+/// Every port `--ports` named, once each, in order.
+pub fn extra_ports(ranges: &[RangeInclusive<u16>]) -> Result<Vec<u16>, String> {
+    let named: usize = ranges.iter().map(|r| r.len()).sum();
+    if named > MAX_EXTRA {
+        return Err(format!(
+            "--ports takes up to {MAX_EXTRA} ports, and that's {named}; nmap is the tool for a port scan"
+        ));
+    }
+    let mut ports: Vec<u16> = ranges.iter().cloned().flatten().collect();
+    ports.sort_unstable();
+    ports.dedup();
+    Ok(ports)
 }
 
 /// Some(true) if the port is open, Some(false) if refused (the host is
@@ -181,6 +227,26 @@ pub fn raise_fd_limit() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ports_takes_ports_and_ranges() {
+        assert_eq!(parse_ports("2049"), Ok(2049..=2049));
+        assert_eq!(parse_ports("8200-8210"), Ok(8200..=8210));
+        assert!(parse_ports("0").unwrap_err().contains("1 to 65535"));
+        assert!(parse_ports("70000").is_err());
+        assert!(parse_ports("http").is_err());
+        assert!(parse_ports("90-80").unwrap_err().contains("80-90"));
+        // Named twice, or checked anyway: once each.
+        let ports = extra_ports(&[9000..=9002, 9001..=9001, 22..=22]).unwrap();
+        assert_eq!(ports, [22, 9000, 9001, 9002]);
+        assert_eq!(service_ports(&ports).filter(|p| *p == 22).count(), 0);
+        assert_eq!(service_ports(&ports).count(), SERVICES.len() + 3);
+        assert!(
+            extra_ports(&[1..=600, 8000..=8999])
+                .unwrap_err()
+                .contains("nmap")
+        );
+    }
 
     #[tokio::test]
     async fn refusals_come_back_at_once() {

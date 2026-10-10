@@ -4,7 +4,7 @@
 //!
 //! After the scan, nothing is sent except follow-up questions to devices
 //! heard for the first time, the same ones the scan asks (ports, web page,
-//! NetBIOS, UPnP, Kasa, reverse DNS).
+//! NetBIOS, SNMP, UPnP, Kasa, reverse DNS).
 
 use crate::history::{self, History};
 use crate::scan::{self, Context, Progress, Tracker};
@@ -333,8 +333,11 @@ mod tests {
             wait: Duration::ZERO,
             grace: Duration::ZERO,
             no_dns: true,
+            no_snmp: true,
+            ports: Vec::new(),
             user_net: false,
             heard: arp::Heard::new(),
+            neighbors: Default::default(),
             arp_ran: true,
             took: Duration::ZERO,
             caveats: Vec::new(),
