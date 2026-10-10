@@ -50,6 +50,7 @@ const KEYS: &[(&str, &str)] = &[
     ("^n ^p ^v M-v", "Emacs: down / up, details page down / up"),
     ("M-< M->  ^g", "Emacs: first / last row, clear the filter"),
     ("/", "Filter the list"),
+    ("s", "Sort the list by its next column"),
     ("Esc", "Clear the filter, or quit"),
     ("r", "Scan again"),
     ("+ → ~ -", "New, moved, renamed, missing since last time"),
@@ -63,6 +64,15 @@ const KEYS: &[(&str, &str)] = &[
 enum Focus {
     List,
     Details,
+}
+
+/// The column the list is in order of: the address, as scanned, or the
+/// name or type (in the services view, the host or service).
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Sort {
+    Address,
+    Name,
+    Kind,
 }
 
 /// What a key asks of the loop that reads them.
@@ -169,6 +179,7 @@ struct App {
     table: TableState,
     filter: String,
     typing_filter: bool,
+    sort: Sort,
     detail_scroll: u16,
     focus: Focus,
     /// The item the details' cursor is on, while they have the keyboard.
@@ -207,6 +218,7 @@ impl App {
             table: TableState::default(),
             filter: String::new(),
             typing_filter: false,
+            sort: Sort::Address,
             detail_scroll: 0,
             focus: Focus::List,
             detail_cursor: 0,
@@ -367,6 +379,7 @@ impl App {
                 self.focus = Focus::List;
                 self.typing_filter = true;
             }
+            KeyCode::Char('s') => self.sort_by_next(),
             KeyCode::Char('1') => self.show(false),
             KeyCode::Char('2') => self.show(true),
             KeyCode::Char('?') => self.show_help = true,
@@ -564,6 +577,82 @@ impl App {
         }
     }
 
+    /// Sort by the next column, left to right and round again, keeping the
+    /// same row selected.
+    fn sort_by_next(&mut self) {
+        let order = self.sort_order();
+        let at = order.iter().position(|&s| s == self.sort).unwrap_or(0);
+        self.sort = order[(at + 1) % order.len()];
+        self.refilter(self.selected_key());
+        let by = match self.headers()[(at + 1) % order.len()] {
+            "IP" => "IP address".to_string(),
+            heading => heading.to_lowercase(),
+        };
+        self.flash = Some((format!("Sorted by {by}"), Instant::now()));
+    }
+
+    /// What each of the list's columns sorts by, left to right.
+    fn sort_order(&self) -> [Sort; 3] {
+        if self.show_services {
+            [Sort::Address, Sort::Kind, Sort::Name]
+        } else {
+            [Sort::Address, Sort::Name, Sort::Kind]
+        }
+    }
+
+    /// The names of the list's columns, left to right.
+    fn headers(&self) -> [&'static str; 3] {
+        if self.show_services {
+            ["ADDRESS", "SERVICE", "HOST"]
+        } else {
+            ["IP", "NAME", "TYPE"]
+        }
+    }
+
+    /// The list's column headings, with the one it's sorted by marked.
+    fn headings(&self) -> [String; 3] {
+        let sorted = self.sort_order().map(|s| s == self.sort);
+        let mut headings = self.headers().map(String::from);
+        for (heading, sorted) in headings.iter_mut().zip(sorted) {
+            if sorted {
+                heading.push_str(" ▾");
+            }
+        }
+        headings
+    }
+
+    /// Put the rows in `self.sort`'s order: by address they already are.
+    /// Rows with no name or type come after those with one, and devices
+    /// that didn't answer stay at the bottom.
+    fn sort_visible(&mut self) {
+        if self.sort == Sort::Address {
+            return;
+        }
+        let devices = &self.scan.devices;
+        let text = |i: usize| -> Option<String> {
+            let (d, service) = if self.show_services {
+                let s = &self.services[i];
+                (&devices[s.device], s.name)
+            } else {
+                (&devices[i], None)
+            };
+            match self.sort {
+                Sort::Kind if self.show_services => service.map(str::to_lowercase),
+                Sort::Kind => kind_label(d).map(|k| k.to_lowercase()),
+                _ => (d.name.as_deref())
+                    .or(d.hostname.as_deref())
+                    .or(d.vendor)
+                    .map(str::to_lowercase),
+            }
+        };
+        let missing = |i: usize| !self.show_services && devices[i].missing();
+        // Stable, so rows that tie stay in address order.
+        self.visible.sort_by_cached_key(|&i| {
+            let text = text(i);
+            (missing(i), text.is_none(), text)
+        });
+    }
+
     /// The selected device's details, as the pane last drew them.
     fn items(&self) -> Vec<Item> {
         self.selected()
@@ -701,6 +790,7 @@ impl App {
                 .filter(|&i| matches(&self.scan.devices[i], String::new()))
                 .collect()
         };
+        self.sort_visible();
         let rows = 0..self.visible.len();
         let pos = keep.and_then(|key| {
             rows.clone()
@@ -972,25 +1062,26 @@ impl App {
     /// layout. The services view shows SERVICE before HOST.
     fn column_widths(&self) -> (u16, u16, u16) {
         let widest = |header: &str, widths: &mut dyn Iterator<Item = usize>| {
-            widths.max().unwrap_or(0).max(header.len()) as u16
+            widths.max().unwrap_or(0).max(header.chars().count()) as u16
         };
         let devices = &self.scan.devices;
+        let [first, second, third] = self.headings();
         if self.show_services {
             let s = &self.services;
             (
-                widest("ADDRESS", &mut s.iter().map(|s| s.address().len())),
+                widest(&first, &mut s.iter().map(|s| s.address().len())),
                 widest(
-                    "HOST",
+                    &third,
                     &mut s.iter().map(|s| list_name(&devices[s.device]).width()),
                 ),
-                widest("SERVICE", &mut s.iter().map(|s| s.name.map_or(0, str::len))),
+                widest(&second, &mut s.iter().map(|s| s.name.map_or(0, str::len))),
             )
         } else {
             (
                 15,
-                widest("NAME", &mut devices.iter().map(|d| list_name(d).width())),
+                widest(&second, &mut devices.iter().map(|d| list_name(d).width())),
                 widest(
-                    "TYPE",
+                    &third,
                     &mut devices
                         .iter()
                         .map(|d| kind_label(d).map_or(0, |k| k.chars().count())),
@@ -1072,7 +1163,7 @@ impl App {
             Constraint::Fill(1),
         ];
         let table = Table::new(rows, widths)
-            .header(Row::new(["ADDRESS", "SERVICE", "HOST"]).bold())
+            .header(Row::new(self.headings()).bold())
             .block(self.pane(
                 self.list_title("Services", self.services.len()),
                 self.focus == Focus::List,
@@ -1110,10 +1201,10 @@ impl App {
             Constraint::Fill(1),
             Constraint::Length(type_width),
         ];
-        let mut header = vec!["IP", "NAME", "TYPE"];
+        let mut header = self.headings().to_vec();
         if marks {
             widths.insert(0, Constraint::Length(1));
-            header.insert(0, "");
+            header.insert(0, String::new());
         }
         let table = Table::new(rows, widths)
             .header(Row::new(header).bold())
@@ -1220,6 +1311,7 @@ impl App {
                     ("w", "open", 6),
                     ("/", "filter", 4),
                     ("esc", "clear filter", 4),
+                    ("s", "sort", 3),
                     ("r", "rescan", 3),
                     ("t", "theme", 2),
                     ("?", "help", 9),
@@ -1443,11 +1535,17 @@ fn haystack(d: &Device) -> String {
         d.mac.clone(),
         d.hostname.clone(),
     ];
+    // "disagrees" and "names differ" find the devices whose sources do.
+    let disputed = [
+        (!d.type_disagrees.is_empty()).then(|| "type disagrees".to_string()),
+        (!d.names_differ.is_empty()).then(|| format!("names differ\n{}", d.names_differ.join("\n"))),
+    ];
     let flags = d
         .flags
         .iter()
         .map(|f| Some(flag_words(*f).to_string()))
-        .chain([change_words(d)]);
+        .chain([change_words(d)])
+        .chain(disputed);
     fields
         .into_iter()
         .chain(flags)
@@ -1524,10 +1622,22 @@ fn details(d: &Device, cols: u16) -> Vec<Item> {
             Style::new().cyan(),
         );
     }
-    for (label, from) in [("Type from", &d.type_from), ("Name from", &d.name_from)] {
-        if let Some(from) = from {
-            row(&mut out, label.dark_gray(), from, Style::new().dark_gray());
-        }
+    // What decided the type and the name, and under each, whoever says
+    // otherwise.
+    let evidence = |out: &mut Vec<Item>, label: &'static str, value: &str| {
+        row(out, label.dark_gray(), value, Style::new().dark_gray());
+    };
+    if let Some(from) = &d.type_from {
+        evidence(&mut out, "Type from", from);
+    }
+    for other in &d.type_disagrees {
+        evidence(&mut out, "Disagrees", other);
+    }
+    if let Some(from) = &d.name_from {
+        evidence(&mut out, "Name from", from);
+    }
+    if !d.names_differ.is_empty() {
+        evidence(&mut out, "Names differ", &d.names_differ.join(" · "));
     }
     if !out.is_empty() {
         gap(&mut out);
@@ -1554,6 +1664,7 @@ fn details(d: &Device, cols: u16) -> Vec<Item> {
     };
     field(&mut out, "Vendor", vendor);
     field(&mut out, "Hostname", d.hostname.clone());
+    field(&mut out, "Ping", d.ping_ms.map(ping_text));
     if !d.changes.contains(&Change::New) {
         field(&mut out, "First seen", d.first_seen.map(history::date));
     }
@@ -1644,6 +1755,15 @@ fn details(d: &Device, cols: u16) -> Vec<Item> {
         field(&mut out, "Server", h.server.clone());
     }
     out
+}
+
+/// A round trip, to about two figures: "0.42 ms", "2.4 ms", "38 ms".
+fn ping_text(ms: f64) -> String {
+    match ms {
+        ms if ms < 1.0 => format!("{ms:.2} ms"),
+        ms if ms < 10.0 => format!("{ms:.1} ms"),
+        ms => format!("{ms:.0} ms"),
+    }
 }
 
 /// What the filter matches for a flag.
@@ -1904,6 +2024,90 @@ mod tests {
         assert_eq!(flagged("off-subnet"), 1);
     }
 
+    #[test]
+    fn details_show_the_ping_and_who_disagrees() {
+        let scan = crate::demo::scan();
+        let pi = (scan.devices.iter())
+            .find(|d| d.ip.to_string() == "192.168.1.130")
+            .unwrap();
+        let text = details_text(pi);
+        assert!(text.contains("Name from     .local name\n"), "{text}");
+        assert!(
+            text.contains("Names differ  raspberrypi.local (Bonjour) · study.lan (reverse DNS)\n"),
+            "{text}"
+        );
+        assert!(text.contains("Ping          0.62 ms\n"), "{text}");
+        let differing = scan.devices.iter().filter(|d| haystack(d).contains("differ"));
+        assert_eq!(differing.count(), 1);
+        assert_eq!(ping_text(0.416), "0.42 ms");
+        assert_eq!(ping_text(2.44), "2.4 ms");
+        assert_eq!(ping_text(38.2), "38 ms");
+    }
+
+    /// The first column of each of the list's rows, as `app` has them.
+    fn rows(app: &App) -> Vec<String> {
+        (0..app.visible.len())
+            .map(|r| match app.row_key(r) {
+                (ip, Some(port)) => format!("{ip}:{port}"),
+                (ip, None) => ip.to_string(),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn s_sorts_by_each_column_in_turn() {
+        let mut scan = crate::demo::scan();
+        crate::demo::memory().mark(&mut scan);
+        let mut app = App::new(scan, false);
+        let by_address = rows(&app);
+        select_ip(&mut app, "192.168.1.52");
+        assert!(drawn(&mut app, 120).contains("IP ▾"));
+
+        press(&mut app, KeyCode::Char('s'));
+        assert_eq!(app.sort, Sort::Name);
+        assert!(drawn(&mut app, 120).contains("NAME ▾"));
+        // The same device stays selected, wherever it went.
+        assert_eq!(app.selected_ip().unwrap().to_string(), "192.168.1.52");
+        let by_name = rows(&app);
+        // "Alex's MacBook Pro", "alex-phone", … whatever their case.
+        assert_eq!(by_name[..2], ["192.168.1.196", "192.168.1.112"]);
+        // The device that didn't answer stays last, in every order.
+        assert_eq!(by_name.last().unwrap(), "192.168.1.95");
+
+        press(&mut app, KeyCode::Char('s'));
+        assert_eq!(app.sort, Sort::Kind);
+        let by_kind = rows(&app);
+        // Audio devices first, in address order; the one with no type
+        // after all that have one.
+        assert_eq!(by_kind[..2], ["192.168.0.78", "192.168.1.77"]);
+        assert_eq!(by_kind[by_kind.len() - 2], "192.168.1.203");
+        assert_eq!(by_kind.last().unwrap(), "192.168.1.95");
+
+        press(&mut app, KeyCode::Char('s'));
+        assert_eq!(app.sort, Sort::Address);
+        assert_eq!(rows(&app), by_address);
+    }
+
+    #[test]
+    fn services_sort_by_their_own_columns() {
+        let mut app = App::new(crate::demo::scan(), true);
+        press(&mut app, KeyCode::Char('s'));
+        assert_eq!(app.sort, Sort::Kind);
+        let screen = drawn(&mut app, 120);
+        assert!(screen.contains("SERVICE ▾"), "{screen}");
+        assert_eq!(rows(&app)[..2], ["192.168.1.1:53", "192.168.1.150:53"]);
+        press(&mut app, KeyCode::Char('s'));
+        assert_eq!(app.sort, Sort::Name);
+        assert!(drawn(&mut app, 120).contains("HOST ▾"));
+        // A filter keeps the order.
+        app.filter = "ssh".into();
+        app.refilter(None);
+        assert_eq!(
+            rows(&app),
+            ["192.168.1.14:22", "192.168.1.150:22", "192.168.1.130:22"]
+        );
+    }
+
     fn press(app: &mut App, code: KeyCode) -> Action {
         app.key(KeyEvent::new(code, KeyModifiers::NONE))
     }
@@ -2053,7 +2257,7 @@ mod tests {
         // Wide, every hint.
         assert_eq!(
             footer(&mut app, 124),
-            " ↑↓ move  tab details  ⏎ copy IP  c copy all  w open  / filter  r rescan  t theme  ? help  q quit"
+            " ↑↓ move  tab details  ⏎ copy IP  c copy all  w open  / filter  s sort  r rescan  t theme  ? help  q quit"
         );
         // Narrower, the obvious ones go first; help stays.
         for focus in [Focus::List, Focus::Details] {
@@ -2075,11 +2279,11 @@ mod tests {
         app.show(false);
         assert_eq!(
             footer(&mut app, 80),
-            " tab details  ⏎ copy IP  c copy all  w open  / filter  r rescan  t theme  ? help"
+            " tab details  ⏎ copy IP  c copy all  w open  / filter  s sort  r rescan  ? help"
         );
         // Filtering, esc clears it in place of / starting one.
         app.filter = "nas".into();
-        assert!(footer(&mut app, 124).contains("esc clear filter  r rescan"));
+        assert!(footer(&mut app, 124).contains("esc clear filter  s sort  r rescan"));
     }
 
     fn click(app: &mut App, x: u16, y: u16) -> Action {

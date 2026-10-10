@@ -7,11 +7,15 @@ use pnet_base::MacAddr;
 use std::net::Ipv4Addr;
 use std::os::windows::io::AsRawSocket;
 use std::ptr;
-use windows_sys::Win32::Foundation::{ERROR_BUFFER_OVERFLOW, GlobalFree, NO_ERROR};
+use std::time::{Duration, Instant};
+use windows_sys::Win32::Foundation::{
+    ERROR_BUFFER_OVERFLOW, GlobalFree, INVALID_HANDLE_VALUE, NO_ERROR,
+};
 use windows_sys::Win32::NetworkManagement::IpHelper::{
     FreeMibTable, GAA_FLAG_INCLUDE_GATEWAYS, GAA_FLAG_SKIP_ANYCAST, GAA_FLAG_SKIP_DNS_SERVER,
-    GAA_FLAG_SKIP_MULTICAST, GetAdaptersAddresses, GetIfEntry2, GetIpNetTable2,
-    IF_TYPE_SOFTWARE_LOOPBACK, IP_ADAPTER_ADDRESSES_LH, MIB_IF_ROW2, MIB_IPNET_TABLE2, SendARP,
+    GAA_FLAG_SKIP_MULTICAST, GetAdaptersAddresses, GetIfEntry2, GetIpNetTable2, ICMP_ECHO_REPLY,
+    IF_TYPE_SOFTWARE_LOOPBACK, IP_ADAPTER_ADDRESSES_LH, IP_SUCCESS, IcmpCloseHandle,
+    IcmpCreateFile, IcmpSendEcho, MIB_IF_ROW2, MIB_IPNET_TABLE2, SendARP,
 };
 use windows_sys::Win32::NetworkManagement::Ndis::IfOperStatusUp;
 use windows_sys::Win32::Networking::WinSock::{
@@ -140,6 +144,35 @@ pub fn send_arp(target: Ipv4Addr, source: Ipv4Addr) -> Option<MacAddr> {
     };
     (ret == NO_ERROR && len == 6)
         .then(|| MacAddr::new(mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]))
+}
+
+/// Ping `target` once, blocking until it answers or `timeout` passes. The
+/// reply only counts whole milliseconds, so the call is timed instead.
+pub fn ping(target: Ipv4Addr, timeout: Duration) -> Option<Duration> {
+    const DATA: &[u8; 8] = b"lsnet\0\0\0";
+    let handle = unsafe { IcmpCreateFile() };
+    if handle == INVALID_HANDLE_VALUE {
+        return None;
+    }
+    // Room for the reply, the data it echoes, and an ICMP error's 8 bytes.
+    let mut reply = [0u64; (size_of::<ICMP_ECHO_REPLY>() + DATA.len() + 8).div_ceil(8)];
+    let start = Instant::now();
+    let replies = unsafe {
+        IcmpSendEcho(
+            handle,
+            u32::from_ne_bytes(target.octets()),
+            DATA.as_ptr().cast(),
+            DATA.len() as u16,
+            ptr::null(),
+            reply.as_mut_ptr().cast(),
+            size_of_val(&reply) as u32,
+            timeout.as_millis().clamp(1, u128::from(u32::MAX)) as u32,
+        )
+    };
+    let took = start.elapsed();
+    unsafe { IcmpCloseHandle(handle) };
+    let answer = unsafe { &*reply.as_ptr().cast::<ICMP_ECHO_REPLY>() };
+    (replies > 0 && answer.Status == IP_SUCCESS).then_some(took)
 }
 
 /// Windows answers a refused connection (RST) by trying again, so a closed

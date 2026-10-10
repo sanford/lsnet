@@ -53,6 +53,11 @@ struct Args {
     #[arg(short, long, value_name = "CIDR", value_parser = iface::parse_net)]
     net: Option<ipnetwork::Ipv4Network>,
 
+    /// Also ask for another network's addresses on this one, to find devices
+    /// left with a static address from it. Needs sudo. May be given again
+    #[arg(long, value_name = "CIDR", value_parser = iface::parse_net)]
+    also: Vec<ipnetwork::Ipv4Network>,
+
     /// Print a table instead of opening the device browser (the default
     /// when output isn't a terminal)
     #[arg(short, long)]
@@ -80,7 +85,7 @@ struct Args {
     no_dns: bool,
 
     /// Show a made-up network instead of scanning (no packets are sent)
-    #[arg(long, conflicts_with_all = ["interface", "net", "timeout", "no_dns"])]
+    #[arg(long, conflicts_with_all = ["interface", "net", "also", "timeout", "no_dns"])]
     demo: bool,
 
     /// Don't compare with earlier scans of this network, or remember this one
@@ -120,12 +125,21 @@ pub struct Device {
     /// The evidence that decided the type, e.g. "port 8006 open (Proxmox)".
     #[serde(skip_deserializing, skip_serializing_if = "Option::is_none")]
     type_from: Option<String>,
+    /// The other types its own descriptions give it, when they disagree.
+    #[serde(skip_deserializing, skip_serializing_if = "Vec::is_empty")]
+    type_disagrees: Vec<String>,
+    /// Its hostnames and who said each, when they aren't all the same name.
+    #[serde(skip_deserializing, skip_serializing_if = "Vec::is_empty")]
+    names_differ: Vec<String>,
     #[serde(skip_deserializing)]
     vendor: Option<&'static str>,
     mac: Option<String>,
     #[serde(skip_deserializing)]
     randomized_mac: bool,
     hostname: Option<String>,
+    /// The best of three pings' round trips, in milliseconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    ping_ms: Option<f64>,
     #[serde(default)]
     open_ports: Vec<u16>,
     #[serde(default)]
@@ -174,10 +188,13 @@ impl Device {
             kind: None,
             model: None,
             type_from: None,
+            type_disagrees: Vec::new(),
+            names_differ: Vec::new(),
             vendor: None,
             mac: None,
             randomized_mac: false,
             hostname: None,
+            ping_ms: None,
             open_ports: Vec::new(),
             gateway: false,
             this_device: false,

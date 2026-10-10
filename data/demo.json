@@ -55,6 +55,7 @@
     "mac": "00:09:5b:7a:10:01",
     "randomized_mac": false,
     "hostname": "routerlogin.lan",
+    "ping_ms": 1.2,
     "open_ports": [
       53,
       80,
@@ -83,6 +84,7 @@
     "mac": "00:1b:a9:d2:e1:f0",
     "randomized_mac": false,
     "hostname": null,
+    "ping_ms": 3.8,
     "open_ports": [
       80,
       443,
@@ -118,6 +120,7 @@
     "mac": "00:11:32:66:d8:71",
     "randomized_mac": false,
     "hostname": "diskstation.lan",
+    "ping_ms": 0.41,
     "open_ports": [
       22,
       80,
@@ -164,6 +167,7 @@
     "mac": "9c:8e:cd:31:07:aa",
     "randomized_mac": false,
     "hostname": null,
+    "ping_ms": 2.9,
     "open_ports": [
       80
     ],
@@ -191,6 +195,7 @@
     "mac": "f0:18:98:3c:62:8d",
     "randomized_mac": false,
     "hostname": "living-room.lan",
+    "ping_ms": 2.4,
     "open_ports": [
       7000,
       62078
@@ -234,6 +239,7 @@
     "mac": "6c:4a:85:0b:77:21",
     "randomized_mac": false,
     "hostname": null,
+    "ping_ms": 4.6,
     "open_ports": [
       7000
     ],
@@ -271,6 +277,7 @@
     "mac": "f4:f5:d8:44:19:0e",
     "randomized_mac": false,
     "hostname": null,
+    "ping_ms": 6.3,
     "open_ports": [
       8008
     ],
@@ -303,6 +310,7 @@
     "mac": "00:1d:c1:0a:4f:20",
     "randomized_mac": false,
     "hostname": null,
+    "ping_ms": 0.38,
     "open_ports": [],
     "gateway": false,
     "this_device": false,
@@ -330,6 +338,7 @@
     "mac": "6c:5a:b0:9e:41:3d",
     "randomized_mac": false,
     "hostname": "kp115.lan",
+    "ping_ms": 11.7,
     "open_ports": [
       80
     ],
@@ -351,6 +360,7 @@
     "mac": "fc:65:de:2b:80:17",
     "randomized_mac": false,
     "hostname": "blink-mini.lan",
+    "ping_ms": 23.5,
     "open_ports": [],
     "gateway": false,
     "this_device": false
@@ -366,6 +376,7 @@
     "mac": "3a:91:5c:e2:07:1b",
     "randomized_mac": true,
     "hostname": "alex-phone.lan",
+    "ping_ms": 38.2,
     "open_ports": [
       62078
     ],
@@ -382,7 +393,8 @@
     "vendor": "Raspberry Pi",
     "mac": "b8:27:eb:5a:11:c4",
     "randomized_mac": false,
-    "hostname": null,
+    "hostname": "study.lan",
+    "ping_ms": 0.62,
     "open_ports": [
       22,
       1883,
@@ -415,6 +427,7 @@
     "mac": "b8:27:eb:c0:33:5e",
     "randomized_mac": false,
     "hostname": "pihole.lan",
+    "ping_ms": 0.55,
     "open_ports": [
       22,
       53,
@@ -466,6 +479,7 @@
     "mac": "00:02:b3:4d:6e:01",
     "randomized_mac": false,
     "hostname": null,
+    "ping_ms": 0.9,
     "open_ports": [
       3389
     ],
@@ -481,6 +495,7 @@
     "mac": "3c:6a:9d:12:ab:7f",
     "randomized_mac": false,
     "hostname": null,
+    "ping_ms": 7.4,
     "open_ports": [],
     "gateway": false,
     "this_device": false
@@ -495,6 +510,7 @@
     "mac": "24:0a:c4:1d:9e:02",
     "randomized_mac": false,
     "hostname": null,
+    "ping_ms": 14.8,
     "open_ports": [
       80
     ],

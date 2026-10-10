@@ -130,6 +130,7 @@ pub fn stray_flag(ip: Ipv4Addr) -> Flag {
 
 /// Active ARP sweep. Fails with PermissionDenied when we can't open BPF.
 /// Records every sender heard, wherever its address is; see `sort_out`.
+/// Targets may be on other networks (`--also`); see `asking_as`.
 #[cfg(unix)]
 pub fn sweep(ifc: &Iface, targets: &[Ipv4Addr], wait: Duration) -> io::Result<Heard> {
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -175,7 +176,7 @@ pub fn sweep(ifc: &Iface, targets: &[Ipv4Addr], wait: Duration) -> io::Result<He
                 .collect()
         };
         for (i, &target) in pending.iter().enumerate() {
-            let frame = arp_request(own_mac, ifc.ip, target);
+            let frame = arp_request(own_mac, asking_as(ifc, target), target);
             if let Some(Err(e)) = tx.send_to(&frame, None)
                 && round == 0
                 && i == 0
@@ -192,6 +193,19 @@ pub fn sweep(ifc: &Iface, targets: &[Ipv4Addr], wait: Duration) -> io::Result<He
 
     let found = found.lock().unwrap().clone();
     Ok(found)
+}
+
+/// The address an ARP request for `target` says is asking. For an address
+/// on another network (`--also`) that's none at all, an RFC 5227 probe:
+/// whoever holds it must still answer, and nobody there ends up with this
+/// machine's address, from a network they don't know, in their ARP cache.
+#[cfg(unix)]
+fn asking_as(ifc: &Iface, target: Ipv4Addr) -> Ipv4Addr {
+    if ifc.link.contains(target) {
+        ifc.ip
+    } else {
+        Ipv4Addr::UNSPECIFIED
+    }
 }
 
 /// Keep listening for ARP after the sweep: devices announcing themselves,

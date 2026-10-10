@@ -9,6 +9,8 @@ use crate::services::port_name;
 
 pub fn classify(d: &mut Device) {
     (d.name, d.name_from) = name_and_source(d).unzip();
+    d.names_differ = names_differ(d);
+    d.type_disagrees = type_disagrees(d);
     let ((kind, model), why) = match identify_why(d) {
         Some(((k, m), why)) => ((Some(k.to_string()), m), Some(why)),
         None if d.gateway => (
@@ -32,17 +34,46 @@ fn identify(d: &Device) -> Option<Id> {
     identify_why(d).map(|(id, _)| id)
 }
 
+/// Every rule, most specific first.
+const RULES: &[fn(&Device) -> Option<Why>] = &[
+    from_mdns,
+    from_kasa,
+    from_ssdp,
+    from_names,
+    from_http,
+    from_services,
+    from_ports,
+    from_brand_names,
+    from_vendor,
+    from_generic_ports,
+];
+
 fn identify_why(d: &Device) -> Option<Why> {
-    from_mdns(d)
-        .or_else(|| from_kasa(d))
-        .or_else(|| from_ssdp(d))
-        .or_else(|| from_names(d))
-        .or_else(|| from_http(d))
-        .or_else(|| from_services(d))
-        .or_else(|| from_ports(d))
-        .or_else(|| from_brand_names(d))
-        .or_else(|| from_vendor(d))
-        .or_else(|| from_generic_ports(d))
+    RULES.iter().find_map(|rule| rule(d))
+}
+
+/// What a device says about its own model, one protocol at a time. These
+/// are the rules that can disagree: the ones after them are guesses, made
+/// to be overruled (a NAS running Plex is still a NAS).
+const SELF_DESCRIPTIONS: &[fn(&Device) -> Option<Why>] = &[from_mdns, from_kasa, from_ssdp];
+
+/// The other types a device's own descriptions give it, when they don't
+/// all come to the same one: "TV / streamer, from UPnP MediaRenderer by
+/// Denon". "UPnP device" is no type at all, so it can't disagree.
+fn type_disagrees(d: &Device) -> Vec<String> {
+    let mut said = SELF_DESCRIPTIONS.iter().filter_map(|rule| rule(d));
+    let Some(((decided, _), _)) = said.next() else {
+        return Vec::new();
+    };
+    let mut kinds = vec![decided];
+    let mut out = Vec::new();
+    for ((kind, _), why) in said {
+        if kind != "UPnP device" && !kinds.contains(&kind) {
+            kinds.push(kind);
+            out.push(format!("{kind}, from {why}"));
+        }
+    }
+    out
 }
 
 fn from_mdns(d: &Device) -> Option<Why> {
@@ -657,6 +688,43 @@ fn name_and_source(d: &Device) -> Option<(String, String)> {
     .find(|(n, _)| !is_junk_name(n))
 }
 
+/// The hostnames a device goes by, each with who said it, when they aren't
+/// all the same machine name: "raspberrypi.local (Bonjour)" beside
+/// "den.lan (reverse DNS)". Usually that's the router's DNS still
+/// remembering whatever had the address before. Names people give devices
+/// (AirPlay's "Living Room") aren't hostnames, and always differ.
+fn names_differ(d: &Device) -> Vec<String> {
+    let said: Vec<(&str, &str)> = [
+        (d.mdns.as_ref().and_then(|m| m.hostname.as_deref()), "Bonjour"),
+        (d.netbios.as_ref().map(|n| n.name.as_str()), "NetBIOS"),
+        (d.hostname.as_deref(), "reverse DNS"),
+    ]
+    .into_iter()
+    .filter_map(|(name, from)| Some((name?, from)))
+    .filter(|(name, _)| !is_junk_name(name.split('.').next().unwrap_or(name)))
+    .collect();
+    let hosts: Vec<String> = said.iter().map(|(name, _)| host_part(name)).collect();
+    let same = |a: &String, b: &String| a.starts_with(b.as_str()) || b.starts_with(a.as_str());
+    if hosts.iter().all(|h| same(h, &hosts[0])) {
+        return Vec::new();
+    }
+    said.iter()
+        .map(|(name, from)| format!("{name} ({from})"))
+        .collect()
+}
+
+/// A hostname as far as its first dot, down to its letters and digits, so
+/// that "Living-Room.local", "living-room.lan" and "LIVINGROOM" compare
+/// equal. Comparing by prefix then lets through NetBIOS's 15 characters and
+/// the "-2" a Mac adds to a name that's taken.
+fn host_part(name: &str) -> String {
+    let host = name.split('.').next().unwrap_or(name);
+    host.chars()
+        .filter(char::is_ascii_alphanumeric)
+        .map(|c| c.to_ascii_lowercase())
+        .collect()
+}
+
 #[cfg(test)]
 fn name(d: &Device) -> Option<String> {
     name_and_source(d).map(|(n, _)| n)
@@ -1086,5 +1154,74 @@ mod tests {
         assert!(is_junk_name("wlan0"));
         assert!(!is_junk_name("bedroom"));
         assert!(!is_junk_name("ep25"));
+    }
+
+    #[test]
+    fn hostnames_that_differ() {
+        let mut d = device(&[], None);
+        d.mdns = Some(crate::mdns::MdnsInfo {
+            hostname: Some("Living-Room.local".into()),
+            ..Default::default()
+        });
+        d.hostname = Some("living-room.lan".into());
+        d.netbios = Some(crate::netbios::NetbiosInfo {
+            name: "LIVINGROOM".into(),
+            mac: None,
+        });
+        assert!(names_differ(&d).is_empty());
+        // NetBIOS stops at 15 characters, and a Mac numbers a taken name.
+        d.mdns.as_mut().unwrap().hostname = Some("Alexs-MacBook-Pro-2.local".into());
+        d.hostname = Some("alexs-macbook-pro.lan".into());
+        d.netbios.as_mut().unwrap().name = "ALEXS-MACBOOK-P".into();
+        assert!(names_differ(&d).is_empty());
+        // The router remembers an earlier device at this address.
+        d.hostname = Some("den.lan".into());
+        assert_eq!(
+            names_differ(&d),
+            [
+                "Alexs-MacBook-Pro-2.local (Bonjour)",
+                "ALEXS-MACBOOK-P (NetBIOS)",
+                "den.lan (reverse DNS)"
+            ]
+        );
+        // Names made from the address or a serial number say nothing.
+        d.hostname = Some("192-168-1-2.lan".into());
+        assert!(names_differ(&d).is_empty());
+        d.hostname = Some("e6b1c9d2.lan".into());
+        assert!(names_differ(&d).is_empty());
+    }
+
+    #[test]
+    fn self_descriptions_that_disagree() {
+        let mut d = device(&[], None);
+        d.mdns = Some(crate::mdns::MdnsInfo {
+            services: [("airplay".to_string(), "Den".to_string())].into(),
+            txt: [(
+                "airplay".to_string(),
+                [("model".to_string(), "AudioAccessory5,1".to_string())].into(),
+            )]
+            .into(),
+            ..Default::default()
+        });
+        assert!(type_disagrees(&d).is_empty());
+        d.ssdp = Some(crate::ssdp::SsdpInfo {
+            device_type: Some("urn:schemas-upnp-org:device:MediaRenderer:1".into()),
+            manufacturer: Some("Denon".into()),
+            ..Default::default()
+        });
+        assert_eq!(
+            type_disagrees(&d),
+            ["TV / streamer, from UPnP MediaRenderer by Denon"]
+        );
+        // A model with nothing to say about its type doesn't disagree.
+        d.ssdp = Some(crate::ssdp::SsdpInfo {
+            model_name: Some("X1".into()),
+            ..Default::default()
+        });
+        assert!(type_disagrees(&d).is_empty());
+        // What it runs isn't what it is: ports and services don't count.
+        d.ssdp = None;
+        d.open_ports = vec![32400];
+        assert!(type_disagrees(&d).is_empty());
     }
 }

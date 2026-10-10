@@ -14,7 +14,7 @@ use std::net::Ipv4Addr;
 mod windows;
 #[cfg(windows)]
 pub use windows::{
-    adapters, arp_cache, default_gateway, fail_fast_on_refusal, send_arp, set_clipboard,
+    adapters, arp_cache, default_gateway, fail_fast_on_refusal, ping, send_arp, set_clipboard,
 };
 
 /// A network adapter, as the OS lists it.

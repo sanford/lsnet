@@ -189,6 +189,23 @@ pub fn run(args: &Args, report: Report, recheck: &[Ipv4Addr]) -> Result<(Scan, C
         .copied()
         .filter(|ip| ifc.link.contains(*ip))
         .collect();
+    // `--also`: other networks' addresses to ask for on this segment, where
+    // a device left on one of them can still be heard.
+    if cfg!(windows) && !args.also.is_empty() {
+        return Err("--also isn't available on Windows, which only sends ARP for addresses on its own network".into());
+    }
+    let mut caveats = Vec::new();
+    let mut arp_targets = link_targets.clone();
+    for &range in &args.also {
+        let before = arp_targets.len();
+        arp_targets.extend(also_targets(range, ifc.link));
+        if arp_targets.len() == before {
+            caveats.push(format!(
+                "--also {range} is part of this network ({}) already; --net {range} scans it",
+                ifc.link
+            ));
+        }
+    }
     let small = targets.len() <= ALL_AT_ONCE;
     let wait = Duration::from_millis(args.timeout);
     // Extra time for follow-up requests (UPnP descriptions, web banners).
@@ -203,7 +220,7 @@ pub fn run(args: &Args, report: Report, recheck: &[Ipv4Addr]) -> Result<(Scan, C
     // table overflows and hosts go missing. It's much faster, too.
     let early_arp = (!small && !link_targets.is_empty()).then(|| {
         tracker.waiting(&["ARP"]);
-        arp::sweep(&ifc, &link_targets, wait)
+        arp::sweep(&ifc, &arp_targets, wait)
     });
     let probe_targets: Vec<Ipv4Addr> = match &early_arp {
         Some(Ok(heard)) => targets
@@ -229,7 +246,7 @@ pub fn run(args: &Args, report: Report, recheck: &[Ipv4Addr]) -> Result<(Scan, C
     let (arp_result, pinged, mut names, (open_ports, mdns, ssdp, kasa)) = thread::scope(|s| {
         let arp = s.spawn(|| {
             tracked(&tracker, "ARP", || {
-                early_arp.unwrap_or_else(|| arp::sweep(&ifc, &link_targets, wait))
+                early_arp.unwrap_or_else(|| arp::sweep(&ifc, &arp_targets, wait))
             })
         });
         let pinged = s.spawn(|| tracked(&tracker, "ping", || ping::sweep(&probe_targets, wait)));
@@ -290,6 +307,12 @@ pub fn run(args: &Args, report: Report, recheck: &[Ipv4Addr]) -> Result<(Scan, C
         }
         Err(e) => return Err(format!("ARP sweep on {} failed: {e}", ifc.iface.name)),
     };
+    // Rather that than quietly scanning less than was asked for.
+    if !privileged && !args.also.is_empty() {
+        return Err(
+            "--also asks for addresses over ARP, which lsnet can't send without raw access: run with sudo".into(),
+        );
+    }
     let mut ctx = Context {
         arp_ran: privileged,
         rt,
@@ -397,7 +420,6 @@ pub fn run(args: &Args, report: Report, recheck: &[Ipv4Addr]) -> Result<(Scan, C
     devices.sort_by_key(|d| d.ip);
 
     let ifc = &ctx.ifc;
-    let mut caveats = Vec::new();
     if let Some(full) = ifc.narrowed_from {
         caveats.push(if full.prefix() >= iface::MAX_NET_PREFIX {
             format!("{full} is large; scanned only the local /24 (--net {full} scans all of it)")
@@ -430,8 +452,9 @@ pub fn run(args: &Args, report: Report, recheck: &[Ipv4Addr]) -> Result<(Scan, C
 /// Phase 2, for `devices`: ports for hosts found some way other than the
 /// port probe (`port_scanned`), then web banners for everything serving
 /// HTTP. Alongside, every device is asked for its NetBIOS name, and those
-/// that stayed quiet to the UPnP and Kasa broadcasts are asked directly.
-/// With `look_up`, their names are looked up too. Then each is finished.
+/// that stayed quiet to the UPnP and Kasa broadcasts are asked directly,
+/// and each is pinged, to time it. With `look_up`, their names are looked
+/// up too. Then each is finished.
 /// Strays are outside this network, so nothing here routes to them.
 pub fn follow_up(
     ctx: &Context,
@@ -469,15 +492,16 @@ pub fn follow_up(
     } else {
         Vec::new()
     };
-    let mut phase_two = vec!["ports", "web pages", "NetBIOS", "UPnP", "Kasa"];
+    let mut phase_two = vec!["ports", "web pages", "NetBIOS", "UPnP", "Kasa", "ping"];
     if look_up {
         phase_two.push("reverse DNS");
     }
     tracker.checks.store(0, Ordering::Relaxed);
     tracker.waiting(&phase_two);
     let wait = ctx.wait;
-    let (followed, netbios, late_ssdp, late_kasa, late_names) = thread::scope(|s| {
+    let (followed, netbios, late_ssdp, late_kasa, late_names, pings) = thread::scope(|s| {
         let late_names = s.spawn(|| tracked(tracker, "reverse DNS", || hostnames(late, wait)));
+        let pings = s.spawn(|| tracked(tracker, "ping", || ping::times(&netbios_targets, grace)));
         let (followed, netbios, ssdp, kasa) = ctx.rt.block_on(async {
             let followed = async {
                 let mut set = JoinSet::new();
@@ -530,7 +554,8 @@ pub fn follow_up(
             )
         });
         let late_names = late_names.join().expect("dns thread");
-        (followed, netbios, ssdp, kasa, late_names)
+        let pings = pings.join().expect("ping thread");
+        (followed, netbios, ssdp, kasa, late_names, pings)
     });
     names.extend(late_names);
     for d in devices {
@@ -560,6 +585,10 @@ pub fn follow_up(
         }
         if let Some(name) = names.get(&d.ip) {
             d.hostname = Some(name.clone());
+        }
+        if let Some(took) = pings.get(&d.ip) {
+            // To a hundredth of a millisecond: finer is noise.
+            d.ping_ms = Some((took.as_secs_f64() * 100_000.0).round() / 100.0);
         }
         finish(d);
     }
@@ -631,6 +660,17 @@ pub fn hostnames(ips: Vec<Ipv4Addr>, deadline: Duration) -> HashMap<Ipv4Addr, St
         }
     }
     out
+}
+
+/// The addresses `--also range` adds to the ARP sweep: its hosts, but for
+/// any on `link`, this interface's own network, which `--net` scans.
+fn also_targets(range: ipnetwork::Ipv4Network, link: ipnetwork::Ipv4Network) -> Vec<Ipv4Addr> {
+    let ends = range.prefix() < 31;
+    range
+        .iter()
+        .filter(|&a| !(ends && (a == range.network() || a == range.broadcast())))
+        .filter(|&a| !link.contains(a))
+        .collect()
 }
 
 pub fn host(hosts: &mut BTreeMap<Ipv4Addr, Device>, ip: Ipv4Addr) -> &mut Device {
@@ -763,6 +803,23 @@ mod tests {
             heard_from,
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn also_asks_only_for_addresses_off_this_network() {
+        let link = "192.168.1.0/24".parse().unwrap();
+        let hosts = also_targets("192.168.0.0/24".parse().unwrap(), link);
+        assert_eq!(hosts.len(), 254);
+        assert_eq!(hosts[0], ip("192.168.0.1"));
+        // One address, and a range that takes in this network.
+        assert_eq!(
+            also_targets("10.0.0.10/32".parse().unwrap(), link),
+            [ip("10.0.0.10")]
+        );
+        let wide = also_targets("192.168.0.0/23".parse().unwrap(), link);
+        assert_eq!(wide.len(), 255);
+        assert!(!wide.contains(&ip("192.168.1.20")));
+        assert!(also_targets("192.168.1.128/25".parse().unwrap(), link).is_empty());
     }
 
     #[test]

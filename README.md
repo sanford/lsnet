@@ -7,7 +7,7 @@ $ lsnet
  lsnet  1 Devices  2 Services
  19 devices on 192.168.1.0/24 (en0) in 2.0s · 1 address conflict · 1 self-assigned address · 1 off-subnet address
 ┌ Devices (19 · 1 missing) ──────────────────────────────────────────┐┌ Living Room ───────────────────────────────────────┐
-│    IP              NAME                      TYPE                  ││ TV / streamer · Apple TV 4K (3rd gen)              │
+│    IP ▾            NAME                      TYPE                  ││ TV / streamer · Apple TV 4K (3rd gen)              │
 │  + 169.254.37.12   PTZ-CAM-1.local           Video device          ││ Type from      Bonjour airplay model = AppleTV14,1 │
 │    192.168.0.78    Audinate Pty L            Audio device          ││ Name from      AirPlay                             │
 │    192.168.1.1     Home Router               Router (gateway)      ││                                                    │
@@ -15,21 +15,21 @@ $ lsnet
 │    192.168.1.14    diskstation.local         NAS                   ││ MAC            f0:18:98:3c:62:8d                   │
 │    192.168.1.40    ptz-cam-2.local           Video device          ││ Vendor         Apple                               │
 │›   192.168.1.52    Living Room               TV / streamer         ││ Hostname       living-room.lan                     │
-│  → 192.168.1.60    Kitchen                   Speaker               ││ First seen     1 Sep 2026                          │
-│    192.168.1.71    Office speaker            Speaker               ││ Open ports     7000 AirPlay · 62078 iOS sync       │
-│    192.168.1.77    Stagebox-FOH              Audio device          ││                                                    │
-│    192.168.1.88    kp115                     Smart plug            ││ Bonjour (mDNS)                                     │
-│  + 192.168.1.90    blink-mini                Camera                ││ Name           Living-Room.local                   │
-│    192.168.1.112   alex-phone                Phone / tablet        ││ airplay        Living Room                         │
-│    192.168.1.130   raspberrypi.local         Computer              ││                model = AppleTV14,1                 │
-│  ~ 192.168.1.150   pihole                    DNS server            ││ raop           6C4A85D1E0F2@Living Room            │
-│    192.168.1.196   Alex's MacBook Pro        Computer (this device)││                am = AppleTV14,1                    │
-│    192.168.1.201   Intel                     Computer              ││ companion-link Living Room                         │
-│    192.168.1.203   Dexatek                                         ││                rpmd = AppleTV14,1                  │
-│    192.168.1.230   Espressif                 IoT device            ││                                                    │
+│  → 192.168.1.60    Kitchen                   Speaker               ││ Ping           2.4 ms                              │
+│    192.168.1.71    Office speaker            Speaker               ││ First seen     1 Sep 2026                          │
+│    192.168.1.77    Stagebox-FOH              Audio device          ││ Open ports     7000 AirPlay · 62078 iOS sync       │
+│    192.168.1.88    kp115                     Smart plug            ││                                                    │
+│  + 192.168.1.90    blink-mini                Camera                ││ Bonjour (mDNS)                                     │
+│    192.168.1.112   alex-phone                Phone / tablet        ││ Name           Living-Room.local                   │
+│    192.168.1.130   raspberrypi.local         Computer              ││ airplay        Living Room                         │
+│  ~ 192.168.1.150   pihole                    DNS server            ││                model = AppleTV14,1                 │
+│    192.168.1.196   Alex's MacBook Pro        Computer (this device)││ raop           6C4A85D1E0F2@Living Room            │
+│    192.168.1.201   Intel                     Computer              ││                am = AppleTV14,1                    │
+│    192.168.1.203   Dexatek                                         ││ companion-link Living Room                         │
+│    192.168.1.230   Espressif                 IoT device            ││                rpmd = AppleTV14,1                  │
 │  - 192.168.1.95    myq-garage                Garage door           ││                                                    │
 └────────────────────────────────────────────────────────────────────┘└────────────────────────────────────────────────────┘
- ↑↓ move  tab details  ⏎ copy IP  c copy all  / filter  r rescan  t theme  ? help  q quit
+ ↑↓ move  tab details  ⏎ copy IP  c copy all  / filter  s sort  r rescan  t theme  ? help  q quit
 ```
 
 It's meant to answer the question "what is that?" faster and more simply than [nmap](https://nmap.org). It isn't a port scanner or a security tool.
@@ -121,6 +121,7 @@ lsnet [OPTIONS]
 
   -i, --interface <NAME>  Network interface to scan (default: the one your internet traffic uses)
   -n, --net <CIDR>        Network to scan, up to a /16 (default: see "Which network it scans")
+      --also <CIDR>       Also ask for another network's addresses on this one (see "Address problems")
   -l, --list              Print a table instead of opening the device browser
   -v, --verbose           Print a table that also shows hostnames, open ports and advertised services
   -s, --services          List the services running on the network instead of devices
@@ -144,6 +145,7 @@ lsnet -v               # show the evidence: hostnames, ports, services
 lsnet -s -l            # print every service and its address
 lsnet -t 3000          # wait longer for sleepy Wi-Fi devices
 lsnet --net 10.0.0.0/16 # scan all of a large network, not just your /24
+sudo lsnet --also 192.168.0.0/24 # find devices left on another network's addresses
 lsnet --json | jq '.[] | select(.type == "Printer")'
 lsnet --demo           # try it without a network
 ```
@@ -172,6 +174,7 @@ Press `?` to see every key:
 | `PgUp` `PgDn` or `Ctrl-u` `Ctrl-d` | Scroll the details by half a page |
 | `J` `K` | Scroll the details by one line |
 | `/` | Filter by IP, name, type, model, vendor, MAC or hostname, and in the services view by port or service. `Enter` keeps the filter, `Esc` clears it |
+| `s` | Sort the list by its next column: IP, name, then type (address, service, then host in the services view). `▾` marks the column |
 | `r` | Scan again, keeping your place |
 | `t` | Pick a color theme (see [Themes](#themes)) |
 | `Esc` | Clear the filter, or quit if there isn't one |
@@ -184,6 +187,15 @@ So does the mouse. Click a tab (`1 Devices`, `2 Services`) to switch to it, a ro
 
 Under the type and model, the details say what decided them and where the name came from, for example `Type from  Bonjour airplay model = AppleTV14,1` and `Name from  AirPlay`. If `lsnet` gets a device wrong, that line points at the rule to fix.
 
+When its sources don't agree, the details say that too:
+
+- `Names differ` lists a device's hostnames and who gave each, like `raspberrypi.local (Bonjour) · study.lan (reverse DNS)`, when they aren't the same name. Usually the router's DNS still remembers whatever had the address before. Names that differ only in case, punctuation or domain count as the same, and so does a NetBIOS name cut off at 15 characters. Names people give devices, like AirPlay's "Living Room", aren't compared.
+- `Disagrees` lists any other type a device's own descriptions give it, like `TV / streamer, from UPnP MediaRenderer by Denon` for a speaker whose Bonjour model says it's a speaker. Only what a device says about its own model counts (Bonjour, Kasa, UPnP): open ports and MAC vendors are guesses, and a NAS running Plex is still a NAS.
+
+`/differ` and `/disagrees` filter for them.
+
+`Ping` is the best of three round trips, measured once the device is found. It's missing for devices that ignore pings, and on Linux when `net.ipv4.ping_group_range` doesn't let you send them.
+
 To copy all the details, press `c`: it copies every line, including any scrolled out of view, without wrapping, which selecting them with the mouse can't. For just one value, click its line twice, or press `Tab` to go into the details, move to its line and press `Enter` or `c`. On a terminal narrower than 80 columns there's only room for the list, and `Tab` shows the details in its place. Copying uses `pbcopy` on macOS, `wl-copy`, `xclip` or `xsel` on Linux, and the clipboard directly on Windows. Without any of those, `lsnet` asks the terminal to do the copy, which also works over SSH in most modern terminals.
 
 ### The services view
@@ -195,7 +207,7 @@ $ lsnet -s
  lsnet  1 Devices  2 Services
  19 devices on 192.168.1.0/24 (en0) in 2.0s · 1 address conflict · 1 self-assigned address · 1 off-subnet address
 ┌ Services (23) ──────────────────────────────────────────────┐┌ diskstation.local ────────────────────────────────────────┐
-│  ADDRESS            SERVICE        HOST                     ││ NAS · Synology DS920+                                     │
+│  ADDRESS ▾          SERVICE        HOST                     ││ NAS · Synology DS920+                                     │
 │  192.168.1.1:53     DNS            Home Router              ││ Type from     UPnP Basic by Synology                      │
 │  192.168.1.1:80     HTTP           Home Router              ││ Name from     .local name                                 │
 │  192.168.1.1:443    HTTPS          Home Router              ││                                                           │
@@ -203,26 +215,27 @@ $ lsnet -s
 │  192.168.1.8:443    HTTPS          Brother HL-L2350DW series││ MAC           00:11:32:66:d8:71                           │
 │  192.168.1.8:9100   printing       Brother HL-L2350DW series││ Vendor        Synology                                    │
 │  192.168.1.14:22    SSH            diskstation.local        ││ Hostname      diskstation.lan                             │
-│  192.168.1.14:80    HTTP           diskstation.local        ││ First seen    1 Sep 2026                                  │
-│  192.168.1.14:139   NetBIOS        diskstation.local        ││ Open ports    22 SSH · 80 HTTP · 139 NetBIOS · 443 HTTPS  │
-│  192.168.1.14:443   HTTPS          diskstation.local        ││               · 445 SMB · 5001 HTTPS · 32400 Plex         │
-│  192.168.1.14:445   SMB            diskstation.local        ││                                                           │
-│  192.168.1.14:5001  HTTPS          diskstation.local        ││ Bonjour (mDNS)                                            │
-│› 192.168.1.14:32400 Plex           diskstation.local        ││ Name          diskstation.local                           │
-│  192.168.1.40:80    HTTP           ptz-cam-2.local          ││ adisk         diskstation                                 │
-│  192.168.1.88:80    HTTP           kp115                    ││ smb           diskstation                                 │
-│  192.168.1.130:22   SSH            raspberrypi.local        ││                                                           │
-│  192.168.1.130:1883 MQTT           raspberrypi.local        ││ UPnP                                                      │
-│  192.168.1.130:8123 Home Assistant raspberrypi.local        ││ Name          diskstation (DS920+)                        │
-│  192.168.1.150:22   SSH            pihole                   ││ Manufacturer  Synology                                    │
-│  192.168.1.150:53   DNS            pihole                   ││ Model         DS920+                                      │
-│  192.168.1.150:80   HTTP           pihole                   ││ Device type   urn:schemas-upnp-org:device:Basic:1         │
-│  192.168.1.201:3389 RDP            Intel                    ││                                                           │
-│  192.168.1.230:80   HTTP           Espressif                ││ Web (port 80)                                             │
+│  192.168.1.14:80    HTTP           diskstation.local        ││ Ping          0.41 ms                                     │
+│  192.168.1.14:139   NetBIOS        diskstation.local        ││ First seen    1 Sep 2026                                  │
+│  192.168.1.14:443   HTTPS          diskstation.local        ││ Open ports    22 SSH · 80 HTTP · 139 NetBIOS · 443 HTTPS  │
+│  192.168.1.14:445   SMB            diskstation.local        ││               · 445 SMB · 5001 HTTPS · 32400 Plex         │
+│  192.168.1.14:5001  HTTPS          diskstation.local        ││                                                           │
+│› 192.168.1.14:32400 Plex           diskstation.local        ││ Bonjour (mDNS)                                            │
+│  192.168.1.40:80    HTTP           ptz-cam-2.local          ││ Name          diskstation.local                           │
+│  192.168.1.88:80    HTTP           kp115                    ││ adisk         diskstation                                 │
+│  192.168.1.130:22   SSH            raspberrypi.local        ││ smb           diskstation                                 │
+│  192.168.1.130:1883 MQTT           raspberrypi.local        ││                                                           │
+│  192.168.1.130:8123 Home Assistant raspberrypi.local        ││ UPnP                                                      │
+│  192.168.1.150:22   SSH            pihole                   ││ Name          diskstation (DS920+)                        │
+│  192.168.1.150:53   DNS            pihole                   ││ Manufacturer  Synology                                    │
+│  192.168.1.150:80   HTTP           pihole                   ││ Model         DS920+                                      │
+│  192.168.1.201:3389 RDP            Intel                    ││ Device type   urn:schemas-upnp-org:device:Basic:1         │
+│  192.168.1.230:80   HTTP           Espressif                ││                                                           │
+│                                                             ││ Web (port 80)                                             │
 │                                                             ││ Title         diskstation - Synology DiskStation          │
 │                                                             ││ Server        nginx                                       │
 └─────────────────────────────────────────────────────────────┘└───────────────────────────────────────────────────────────┘
- ↑↓ move  tab details  ⏎ copy address  c copy all  w open  / filter  r rescan  t theme  ? help  q quit
+ ↑↓ move  tab details  ⏎ copy address  c copy all  w open  / filter  s sort  r rescan  t theme  ? help  q quit
 ```
 
 It lists the open ports `lsnet` found (all but AirPlay, Cast and iPhone sync, which are how devices talk to phones rather than servers) plus the web, SSH, file-sharing, VNC and similar services devices advertise over Bonjour, on whatever port they use. This machine's own services aren't listed, since `lsnet` doesn't probe it. `lsnet -s -l` prints the same list as a table (see [Text output](#text-output)), and `lsnet -s --json` gives `ip`, `port`, `service` and `host` for each.
@@ -422,6 +435,15 @@ It holds, for each network, its subnet and its router's address, MAC, UPnP ident
 
 Flagged devices have their IP shown in yellow (red for a conflict) and an explanation in the details. Printed tables end with a line for each saying what's wrong, and the browser's header counts them, like `1 address conflict`. `/conflict`, `/link-local` and `/off-subnet` filter for them. Devices on the wrong network can't be reached through this one, so `lsnet` lists them with what they said about themselves, but doesn't probe them.
 
+An `off-subnet` device is only heard when it speaks, and one sitting idle with a static address may not. `--also` asks for it:
+
+```sh
+sudo lsnet --also 192.168.0.0/24                      # the network it probably came from
+sudo lsnet --also 192.168.0.0/24 --also 10.0.0.50/32  # more than one, or a single address
+```
+
+Every address in the range is asked for over ARP on this segment, along with the scan's own, and whatever holds one must answer, whatever network the question came from. Anything found is listed as `off-subnet`. The requests are ARP probes (RFC 5227), which name no sender address, so nothing on the other network is left with this machine in its ARP cache. A range takes at most a /16, and addresses already on this network are left to the scan. `--also` needs raw access (`sudo`, or `setcap` on Linux) and stops without it, and isn't available on Windows, which only sends ARP for addresses on its own network.
+
 Most of this comes from listening to ARP, which needs raw access (`sudo` on macOS and Linux, or `setcap`). Without it, `lsnet` still finds `link-local` devices that answer Bonjour, but not the other two flags. Windows reports only one MAC per address, so there only Bonjour's `link-local` devices are found. On Linux, strict reverse-path filtering (`rp_filter = 1`) drops Bonjour replies from self-assigned addresses before `lsnet` sees them; the default on most distributions (`2`) lets them through.
 
 ## How it works
@@ -433,7 +455,7 @@ Most of this comes from listening to ARP, which needs raw access (`sudo` on macO
 | **ARP sweep** | Every device that has an IP address, including ones with no open ports, plus its MAC address | yes (or `CAP_NET_RAW` on Linux); no on Windows |
 | **ARP cache** | MAC addresses the kernel learned during the scan, including devices the sweep missed | no on Linux and Windows; on macOS, root or a Developer ID–signed binary |
 | **TCP probe** | Live hosts, since even a refused connection proves a device is there. Every host that answers is then checked for common server and homelab ports (databases, Proxmox, Home Assistant, Plex, Jellyfin, RDP) | no |
-| **Ping** | Devices that ignore every TCP port but still answer ICMP echo (macOS; on Linux and Windows ARP already covers them) | no |
+| **Ping** | Devices that ignore every TCP port but still answer ICMP echo (macOS; on Linux and Windows ARP already covers them). Then, everywhere, how long each device found takes to answer | no |
 | **mDNS / Bonjour** | Friendly names ("Living Room") and model identifiers from TXT records (`AppleTV14,1`, Chromecast `md=`, printer `ty=`, HomeKit categories), plus each device's primary `.local` name from a reverse lookup of its address | no |
 | **SSDP / UPnP** | Manufacturer, model and name from each device's UPnP description, which is how routers, TVs and NASes usually identify themselves | no |
 | **Reverse DNS** | Hostnames from your router's DHCP leases | no |
@@ -471,7 +493,9 @@ In `--json`, each device includes:
 | `ip`, `mac`, `vendor` | Address, hardware address, and manufacturer from the MAC prefix |
 | `name`, `name_from` | The friendliest name the device gives itself, and where it came from |
 | `type`, `model`, `type_from` | What `lsnet` thinks the device is, and the evidence that decided it |
+| `type_disagrees`, `names_differ` | Other types its own descriptions give it, and its hostnames with who gave each, when they don't agree (see [The device browser](#the-device-browser)) |
 | `hostname` | Reverse DNS name |
+| `ping_ms` | The best of three pings' round trips, in milliseconds, if it answered |
 | `randomized_mac` | The device uses a private, per-network MAC (typical of phones and laptops) |
 | `open_ports` | Which of the probed ports are open. Every address is checked for 22, 80, 443, 445, 7000, 8008, 9100 and 62078, and every live device also for 21, 25, 53, 110, 111, 135, 139, 143, 993, 995, 1433, 1521, 1883, 3306, 3389, 5000, 5001, 5060, 5432, 5672, 6379, 8000, 8001, 8006, 8080, 8081, 8096, 8123, 8443, 8888, 9090, 9091, 9443, 9999, 27017 and 32400 |
 | `gateway`, `this_device` | Your router, and the machine running the scan |
