@@ -4,7 +4,7 @@
 //! longer list of service ports, and open ports double as a hint about what
 //! the device is.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::ErrorKind;
 use std::net::Ipv4Addr;
 use std::ops::RangeInclusive;
@@ -39,11 +39,13 @@ pub const AWAKE_WAIT: Duration = Duration::from_millis(250);
 /// then `SERVICES` and `extra` (`--ports`) on each host as soon as it answers. Up to a /22 every
 /// check starts at once; beyond that they start as earlier ones finish.
 /// `checked` counts the liveness checks done, of `liveness_checks(targets)`.
+/// `no_route` collects the targets the system wouldn't send to at all.
 pub async fn scan(
     targets: &[Ipv4Addr],
     extra: &[u16],
     wait: Duration,
     checked: &AtomicUsize,
+    no_route: &mut HashSet<Ipv4Addr>,
 ) -> HashMap<Ipv4Addr, Vec<u16>> {
     let deadline = Instant::now() + wait;
     let mut liveness = targets
@@ -66,14 +68,20 @@ pub async fn scan(
         let Some(joined) = set.join_next().await else {
             break;
         };
-        let Ok((is_liveness, (ip, port, open))) = joined else {
+        let Ok((is_liveness, (ip, port, answer))) = joined else {
             continue;
         };
         if is_liveness {
             checked.fetch_add(1, Ordering::Relaxed);
         }
-        let Some(open) = open else {
-            continue;
+        let open = match answer {
+            Answer::Open => true,
+            Answer::Refused => false,
+            Answer::NoRoute => {
+                no_route.insert(ip);
+                continue;
+            }
+            Answer::Silent => continue,
         };
         if !alive.contains_key(&ip) {
             let left = deadline
@@ -89,6 +97,7 @@ pub async fn scan(
     for ports in alive.values_mut() {
         ports.sort_unstable();
     }
+    no_route.retain(|ip| !alive.contains_key(ip));
     alive
 }
 
@@ -106,7 +115,7 @@ pub async fn all_ports(ip: Ipv4Addr, extra: &[u16], wait: Duration) -> Vec<u16> 
     }
     let mut open = Vec::new();
     while let Some(joined) = set.join_next().await {
-        if let Ok((_, port, Some(true))) = joined {
+        if let Ok((_, port, Answer::Open)) = joined {
             open.push(port);
         }
     }
@@ -158,17 +167,30 @@ pub fn extra_ports(ranges: &[RangeInclusive<u16>]) -> Result<Vec<u16>, String> {
     Ok(ports)
 }
 
-/// Some(true) if the port is open, Some(false) if refused (the host is
-/// there), None if we heard nothing. The wait starts once there's a socket
-/// to spare.
-async fn check(ip: Ipv4Addr, port: u16, wait: Duration) -> (Ipv4Addr, u16, Option<bool>) {
+/// What one port said.
+#[derive(Debug, PartialEq)]
+enum Answer {
+    Open,
+    /// The host is there, with nothing on this port.
+    Refused,
+    /// Nothing came back.
+    Silent,
+    /// The system wouldn't send. To an address nobody has, that's ARP going
+    /// unanswered; to a device that's there, it's macOS keeping us off the
+    /// local network.
+    NoRoute,
+}
+
+/// The wait starts once there's a socket to spare.
+async fn check(ip: Ipv4Addr, port: u16, wait: Duration) -> (Ipv4Addr, u16, Answer) {
     let _permit = sockets().acquire().await.expect("never closed");
-    let open = match timeout(wait, connect(ip, port)).await {
-        Ok(Ok(_)) => Some(true),
-        Ok(Err(e)) if e.kind() == ErrorKind::ConnectionRefused => Some(false),
-        _ => None,
+    let answer = match timeout(wait, connect(ip, port)).await {
+        Ok(Ok(_)) => Answer::Open,
+        Ok(Err(e)) if e.kind() == ErrorKind::ConnectionRefused => Answer::Refused,
+        Ok(Err(e)) if e.kind() == ErrorKind::HostUnreachable => Answer::NoRoute,
+        _ => Answer::Silent,
     };
-    (ip, port, open)
+    (ip, port, answer)
 }
 
 #[cfg(not(windows))]
@@ -258,7 +280,7 @@ mod tests {
             .port();
         let start = std::time::Instant::now();
         let (_, _, open) = check(Ipv4Addr::LOCALHOST, port, Duration::from_secs(5)).await;
-        assert_eq!(open, Some(false));
+        assert_eq!(open, Answer::Refused);
         assert!(
             start.elapsed() < Duration::from_millis(500),
             "took {:?}",

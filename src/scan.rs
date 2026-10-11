@@ -254,6 +254,7 @@ pub fn run(args: &Args, report: Report, recheck: &[Ipv4Addr]) -> Result<(Scan, C
     }
     tracker.waiting(&phase_one);
     let phase_one_done = AtomicBool::new(false);
+    let mut no_route = HashSet::new();
     let (arp_result, pinged, neighbors, mut names, (open_ports, mdns, ssdp, kasa)) =
         thread::scope(|s| {
             let arp = s.spawn(|| {
@@ -294,7 +295,13 @@ pub fn run(args: &Args, report: Report, recheck: &[Ipv4Addr]) -> Result<(Scan, C
                     finished(
                         &tracker,
                         "ports",
-                        probe::scan(&probe_targets, &extra_ports, wait, &tracker.checked)
+                        probe::scan(
+                            &probe_targets,
+                            &extra_ports,
+                            wait,
+                            &tracker.checked,
+                            &mut no_route
+                        )
                     ),
                     finished(&tracker, "Bonjour", mdns::discover(ifc.ip, reverse, wait)),
                     finished(
@@ -407,6 +414,8 @@ pub fn run(args: &Args, report: Report, recheck: &[Ipv4Addr]) -> Result<(Scan, C
     // Whether ARP (or the OS's cache) gave us MACs, before NetBIOS and
     // Bonjour names fill in some of the rest.
     let have_macs = devices.iter().any(|d| d.mac.is_some() && !d.this_device);
+
+    caveats.extend(blocked_note(&devices, &no_route));
 
     // A first look, while phase 2 asks its questions.
     ctx.took = start.elapsed();
@@ -658,11 +667,12 @@ fn second_chance(ctx: &Context, ips: &[Ipv4Addr]) -> Vec<Device> {
     }
     let (ifc, grace) = (&ctx.ifc, ctx.grace);
     let checked = AtomicUsize::new(0);
+    let mut no_route = HashSet::new();
     let (pinged, (open, kasa)) = thread::scope(|s| {
         let pinged = s.spawn(|| ping::sweep(ips, grace));
         let rest = ctx.rt.block_on(async {
             tokio::join!(
-                probe::scan(ips, &ctx.ports, grace, &checked),
+                probe::scan(ips, &ctx.ports, grace, &checked, &mut no_route),
                 kasa::query(ifc.ip, ifc.net, ips, grace),
             )
         });
@@ -685,6 +695,25 @@ fn second_chance(ctx: &Context, ips: &[Ipv4Addr]) -> Vec<Device> {
         finish(d);
     }
     woke
+}
+
+/// macOS asks before letting an app onto the local network, and until the
+/// answer's yes, connecting to anything but the router fails as if it weren't
+/// there. That's what it is when most of the devices heard some other way
+/// (ARP, or a broadcast they answered) are in `no_route`.
+fn blocked_note(devices: &[Device], no_route: &HashSet<Ipv4Addr>) -> Option<String> {
+    if !cfg!(target_os = "macos") {
+        return None;
+    }
+    let others = devices
+        .iter()
+        .filter(|d| !d.this_device && !d.gateway && !d.stray());
+    let (blocked, heard) = others.fold((0, 0), |(blocked, heard), d| {
+        (blocked + usize::from(no_route.contains(&d.ip)), heard + 1)
+    });
+    (blocked > 0 && blocked * 2 > heard).then(|| {
+        "macOS is keeping lsnet off the local network, so devices and their services are missing: allow your terminal app in System Settings > Privacy & Security > Local Network, then scan again".into()
+    })
 }
 
 /// Reverse lookups (which on macOS also ask mDNS for `.local` names), in
