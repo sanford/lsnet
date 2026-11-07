@@ -367,6 +367,9 @@ fn footer(scan: &Scan) -> Vec<String> {
     let mut lines = vec![scan.summary.clone()];
     lines.extend(scan.changes.clone());
     lines.extend(scan.notes.iter().cloned());
+    if scan.blocked {
+        lines.push(format!("{}: {}", scan::BLOCKED, scan::UNBLOCK));
+    }
     lines.extend(scan.caveats.iter().cloned());
     for d in scan.devices.iter().filter(|d| d.missing()) {
         let who = match &d.name {
@@ -498,6 +501,8 @@ pub struct Scan {
     network: Option<history::NetworkId>,
     /// Whether ARP ran, so devices that answer nothing else could be found.
     arp_ran: bool,
+    /// Whether macOS kept the scan off the local network (see `scan::blocked`).
+    blocked: bool,
     /// The time "2 hours ago" is counted from, in Unix seconds: when history
     /// marked it (the demo's is fixed).
     clock: u64,
@@ -513,6 +518,7 @@ impl Scan {
             changes: None,
             network: None,
             arp_ran: false,
+            blocked: false,
             clock: 0,
         }
     }

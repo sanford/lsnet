@@ -57,6 +57,8 @@ pub struct Context {
     /// Whether the ARP sweep ran, so devices that answer nothing else could
     /// be found.
     pub arp_ran: bool,
+    /// Whether macOS kept the scan off the local network (see `blocked`).
+    pub blocked: bool,
     /// How long the scan took.
     pub took: Duration,
     /// Caveats about the scan that aren't about any one device.
@@ -104,6 +106,7 @@ impl Context {
             changes: None,
             network,
             arp_ran: self.arp_ran,
+            blocked: self.blocked,
             clock: crate::history::now(),
         }
     }
@@ -342,6 +345,7 @@ pub fn run(args: &Args, report: Report, recheck: &[Ipv4Addr]) -> Result<(Scan, C
     }
     let mut ctx = Context {
         arp_ran: privileged,
+        blocked: false,
         rt,
         wait,
         grace,
@@ -415,7 +419,7 @@ pub fn run(args: &Args, report: Report, recheck: &[Ipv4Addr]) -> Result<(Scan, C
     // Bonjour names fill in some of the rest.
     let have_macs = devices.iter().any(|d| d.mac.is_some() && !d.this_device);
 
-    caveats.extend(blocked_note(&devices, &no_route));
+    ctx.blocked = blocked(&devices, &no_route);
 
     // A first look, while phase 2 asks its questions.
     ctx.took = start.elapsed();
@@ -701,9 +705,9 @@ fn second_chance(ctx: &Context, ips: &[Ipv4Addr]) -> Vec<Device> {
 /// answer's yes, connecting to anything but the router fails as if it weren't
 /// there. That's what it is when most of the devices heard some other way
 /// (ARP, or a broadcast they answered) are in `no_route`.
-fn blocked_note(devices: &[Device], no_route: &HashSet<Ipv4Addr>) -> Option<String> {
+fn blocked(devices: &[Device], no_route: &HashSet<Ipv4Addr>) -> bool {
     if !cfg!(target_os = "macos") {
-        return None;
+        return false;
     }
     let others = devices
         .iter()
@@ -711,10 +715,13 @@ fn blocked_note(devices: &[Device], no_route: &HashSet<Ipv4Addr>) -> Option<Stri
     let (blocked, heard) = others.fold((0, 0), |(blocked, heard), d| {
         (blocked + usize::from(no_route.contains(&d.ip)), heard + 1)
     });
-    (blocked > 0 && blocked * 2 > heard).then(|| {
-        "macOS is keeping lsnet off the local network, so devices and their services are missing: allow your terminal app in System Settings > Privacy & Security > Local Network, then scan again".into()
-    })
+    blocked > 0 && blocked * 2 > heard
 }
+
+/// What to say when a scan was `blocked`, and what to do about it.
+pub const BLOCKED: &str =
+    "macOS is keeping lsnet off the local network, so devices and their services are missing";
+pub const UNBLOCK: &str = "allow your terminal app in System Settings > Privacy & Security > Local Network, then scan again";
 
 /// Reverse lookups (which on macOS also ask mDNS for `.local` names), in
 /// parallel, giving up on stragglers at the deadline.

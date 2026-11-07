@@ -38,6 +38,7 @@ pub fn scan() -> Scan {
         changes: None,
         network: Some(network),
         arp_ran: true,
+        blocked: false,
         clock: NOW,
     }
 }

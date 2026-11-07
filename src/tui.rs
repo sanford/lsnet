@@ -191,6 +191,11 @@ struct App {
     detail_lines: u16,
     flash: Option<(String, Instant)>,
     show_help: bool,
+    /// The popup saying macOS is keeping the scan off the local network.
+    show_blocked: bool,
+    /// Whether this scan has shown it already: closed, it stays closed
+    /// until the next scan.
+    blocked_seen: bool,
     /// Where results come from, while a scan runs or listens.
     feed: Option<Feed>,
     /// What the scan is doing, e.g. "waiting for ports 43%".
@@ -213,6 +218,8 @@ impl App {
         let mut app = App {
             services: services::list(&scan.devices),
             show_services,
+            show_blocked: scan.blocked,
+            blocked_seen: scan.blocked,
             scan,
             visible: Vec::new(),
             table: TableState::default(),
@@ -258,6 +265,8 @@ impl App {
                 Update::Status(s) => self.status = s,
                 Update::Scan(scan) => {
                     let keep = self.selected_key();
+                    self.show_blocked = scan.blocked && (self.show_blocked || !self.blocked_seen);
+                    self.blocked_seen |= scan.blocked;
                     self.services = services::list(&scan.devices);
                     self.scan = scan;
                     self.has_results = true;
@@ -312,6 +321,7 @@ impl App {
                 Action::Rescan => {
                     // The old scan stops listening when its feed is dropped.
                     self.feed = Some(start());
+                    self.blocked_seen = false;
                     self.status = "scanning again".into();
                 }
             }
@@ -320,6 +330,18 @@ impl App {
 
     fn key(&mut self, key: KeyEvent) -> Action {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        if self.show_blocked {
+            // Any key closes it, and these do something as well.
+            self.show_blocked = false;
+            match key.code {
+                KeyCode::Char('c') if ctrl => return Action::Quit,
+                KeyCode::Char('q') => return Action::Quit,
+                KeyCode::Char('o') => self.open_settings(),
+                KeyCode::Char('r') => return Action::Rescan,
+                _ => {}
+            }
+            return Action::Stay;
+        }
         if self.show_help {
             // Any key closes the help, except that the quit keys still quit.
             self.show_help = false;
@@ -403,8 +425,9 @@ impl App {
             MouseEventKind::Down(MouseButton::Left) => 0,
             _ => return Action::Stay,
         };
-        if self.show_help {
+        if self.show_help || self.show_blocked {
             self.show_help = false;
+            self.show_blocked = false;
             return Action::Stay;
         }
         self.typing_filter = false;
@@ -854,6 +877,18 @@ impl App {
         self.flash = Some((message, Instant::now()));
     }
 
+    /// Open System Settings where macOS lists who may use the local network.
+    fn open_settings(&mut self) {
+        let message = match open_in_browser(LOCAL_NETWORK_SETTINGS) {
+            Ok(()) => {
+                "Opening Privacy & Security: allow your terminal under Local Network, then press r"
+                    .into()
+            }
+            Err(e) => format!("Couldn't open System Settings: {e}"),
+        };
+        self.flash = Some((message, Instant::now()));
+    }
+
     fn copy_details(&mut self) {
         let Some(d) = self.selected() else { return };
         let title = d.name.clone().unwrap_or_else(|| d.ip.to_string());
@@ -919,10 +954,13 @@ impl App {
         self.draw_overlays(f, body);
     }
 
-    /// The help, or the theme picker, over the panes.
+    /// The help, the local network popup, or the theme picker, over the panes.
     fn draw_overlays(&mut self, f: &mut Frame, area: Rect) {
         if self.show_help {
             draw_help(f, area);
+        }
+        if self.show_blocked {
+            draw_blocked(f, area);
         }
         let Some(themes) = &mut self.themes else {
             return;
@@ -976,6 +1014,11 @@ impl App {
     /// wrong (the details say why), and what it couldn't see.
     fn summary(&self) -> Line<'static> {
         let mut parts = vec![Span::raw(self.scan.summary.clone()).dim()];
+        // First, so a narrow terminal doesn't cut it off once the popup's
+        // closed: it's why the rest is short.
+        if self.scan.blocked {
+            parts.push("off the local network".yellow());
+        }
         if !self.status.is_empty() {
             parts.push(Span::raw(self.status.clone()).cyan());
         }
@@ -1436,6 +1479,45 @@ fn draw_help(f: &mut Frame, area: Rect) {
     f.render_widget(Clear, popup);
     let block = Block::bordered()
         .title(" Keys ".bold())
+        .padding(Padding::horizontal(1));
+    f.render_widget(Paragraph::new(lines).block(block), popup);
+}
+
+/// The Local Network list in System Settings' Privacy & Security. Where
+/// macOS has no link to the list itself, this opens Privacy & Security.
+const LOCAL_NETWORK_SETTINGS: &str =
+    "x-apple.systempreferences:com.apple.preference.security?Privacy_LocalNetwork";
+
+/// Why there's less here than there should be, and what to do about it.
+fn draw_blocked(f: &mut Frame, area: Rect) {
+    let lines = vec![
+        Line::from("macOS is keeping lsnet off the local network, so"),
+        Line::from("devices and their services are missing."),
+        Line::default(),
+        Line::from("Allow your terminal app in System Settings >"),
+        Line::from("Privacy & Security > Local Network, then scan again."),
+        Line::default(),
+        Line::from(vec![
+            "o".bold(),
+            Span::raw(" open those settings   "),
+            "r".bold(),
+            Span::raw(" scan again   "),
+            "esc".bold(),
+            Span::raw(" close"),
+        ]),
+    ];
+    let width = lines.iter().map(Line::width).max().unwrap_or(0) as u16 + 4;
+    let height = lines.len() as u16 + 2;
+    let popup = Rect {
+        x: area.x + area.width.saturating_sub(width) / 2,
+        y: area.y + area.height.saturating_sub(height) / 2,
+        width: width.min(area.width),
+        height: height.min(area.height),
+    };
+    f.render_widget(Clear, popup);
+    let block = Block::bordered()
+        .title(" Local network ".bold())
+        .border_style(Style::new().yellow())
         .padding(Padding::horizontal(1));
     f.render_widget(Paragraph::new(lines).block(block), popup);
 }
@@ -2175,6 +2257,33 @@ mod tests {
         assert!(app.show_services, "2 stays on services");
         press(&mut app, KeyCode::Char('1'));
         assert!(!app.show_services);
+    }
+
+    #[test]
+    fn a_blocked_scan_says_so_in_a_popup() {
+        let mut scan = crate::demo::scan();
+        scan.blocked = true;
+        let mut app = App::new(scan, false);
+        let screen = drawn(&mut app, 120);
+        assert!(screen.contains(" Local network "));
+        assert!(screen.contains("o open those settings   r scan again   esc close"));
+        // Any key closes it, leaving a word in the summary; r scans again too.
+        assert!(matches!(press(&mut app, KeyCode::Esc), Action::Stay));
+        let screen = drawn(&mut app, 200);
+        assert!(!screen.contains(" Local network "));
+        let second = screen.lines().nth(1).unwrap();
+        assert!(second.contains("off the local network"), "{second}");
+        // Ahead of the status, so a narrow terminal keeps it.
+        app.status = "listening for more devices".into();
+        let screen = drawn(&mut app, 80);
+        let second = screen.lines().nth(1).unwrap();
+        assert!(second.contains("off the local network"), "{second}");
+        app.show_blocked = true;
+        let action = press(&mut app, KeyCode::Char('r'));
+        assert!(matches!(action, Action::Rescan));
+        assert!(!app.show_blocked);
+        let mut app = App::new(crate::demo::scan(), false);
+        assert!(!drawn(&mut app, 120).contains(" Local network "));
     }
 
     #[test]

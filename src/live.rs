@@ -339,6 +339,7 @@ mod tests {
             heard: arp::Heard::new(),
             neighbors: Default::default(),
             arp_ran: true,
+            blocked: false,
             took: Duration::ZERO,
             caveats: Vec::new(),
         }
