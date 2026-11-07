@@ -60,7 +60,13 @@ With [Homebrew](https://brew.sh), on macOS and Linux:
 brew install sanford/tap/lsnet
 ```
 
-On Windows, with [Scoop](https://scoop.sh):
+On Windows, with [winget](https://learn.microsoft.com/windows/package-manager/winget/), which comes with Windows 10 and 11:
+
+```powershell
+winget install Sanford.lsnet
+```
+
+Or with [Scoop](https://scoop.sh):
 
 ```powershell
 scoop bucket add sanford https://github.com/sanford/scoop-bucket
