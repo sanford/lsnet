@@ -1627,7 +1627,8 @@ fn haystack(d: &Device) -> String {
     // "disagrees" and "names differ" find the devices whose sources do.
     let disputed = [
         (!d.type_disagrees.is_empty()).then(|| "type disagrees".to_string()),
-        (!d.names_differ.is_empty()).then(|| format!("names differ\n{}", d.names_differ.join("\n"))),
+        (!d.names_differ.is_empty())
+            .then(|| format!("names differ\n{}", d.names_differ.join("\n"))),
     ];
     let flags = d
         .flags
@@ -2142,7 +2143,10 @@ mod tests {
             "{text}"
         );
         assert!(text.contains("Ping          0.62 ms\n"), "{text}");
-        let differing = scan.devices.iter().filter(|d| haystack(d).contains("differ"));
+        let differing = scan
+            .devices
+            .iter()
+            .filter(|d| haystack(d).contains("differ"));
         assert_eq!(differing.count(), 1);
         assert_eq!(ping_text(0.416), "0.42 ms");
         assert_eq!(ping_text(2.44), "2.4 ms");

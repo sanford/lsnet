@@ -286,16 +286,18 @@ fn parse_reverse(name: &str) -> Option<Ipv4Addr> {
 
 /// `Living Room._airplay._tcp.local` → ("Living Room", "airplay")
 fn split_instance(name: &str) -> Option<(String, String)> {
-    let parsed = Name::new_unchecked(name);
-    let labels = parsed.get_labels();
+    // `name` is a name as text, with dots inside a label escaped (`My\.Mac`):
+    // `Name::new` reads the escapes, and each label's bytes are its text.
+    let parsed = Name::new(name).ok()?;
+    let labels: Vec<&[u8]> = parsed.as_bytes().collect();
     if labels.len() < 3 {
         return None;
     }
-    let service = labels[labels.len() - 3].to_string();
+    let service = String::from_utf8_lossy(labels[labels.len() - 3]);
     let service = service.strip_prefix('_')?.to_ascii_lowercase();
     let instance = labels[..labels.len() - 3]
         .iter()
-        .map(|l| l.to_string())
+        .map(|l| String::from_utf8_lossy(l))
         .collect::<Vec<_>>()
         .join(".");
     Some((instance, service))

@@ -99,7 +99,10 @@ fn block(readme: &str, command: &str) -> Option<std::ops::Range<usize>> {
 #[test]
 fn readme_shows_the_demo_network() {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("README.md");
-    let mut readme = std::fs::read_to_string(&path).unwrap();
+    // As committed: a Windows checkout may have turned its LFs into CRLFs.
+    let mut readme = std::fs::read_to_string(&path)
+        .unwrap()
+        .replace("\r\n", "\n");
     let update = std::env::var_os("LSNET_UPDATE_README").is_some();
     let mut stale = Vec::new();
     for (command, want) in examples() {
